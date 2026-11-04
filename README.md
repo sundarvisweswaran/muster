@@ -32,6 +32,22 @@ Skip it for small fixes: a herd runs three agents, so it costs roughly three tim
 - Python 3.9+.
 - The agents you configure, installed and logged in on that machine.
 
+## Set it up by asking your agent
+
+Paste this into your coding agent (omp, Claude Code, Codex, …), running in a terminal on the machine where you want herds:
+
+```text
+Set up Sheepdog (https://github.com/sundarvisweswaran/sheepdog) on this machine and verify it end to end.
+
+1. Read its README first. Check that herdr-core's `hc` is installed (`hc --version`); if it isn't, stop and tell me to install Herdr from https://herdr.dev/download/.
+2. Clone it to ~/code/sheepdog (pull if it's already there) and run `~/code/sheepdog/bin/sheepdog install`.
+3. Ask me which agent should run each role: Plotter (plans), Tinker (builds), Nitpick (verifies). Use only agents installed and logged in here; suggest a different model for Nitpick than for Tinker. Write them to ~/.config/sheepdog/config.toml, with whatever flag each agent needs to run without permission prompts, then run `sheepdog install` again.
+4. If the Herdr app is installed, set the pane header in my active layout (~/.config/herdr-app/layouts/<layout>.json, "header" → "content" → "mod") to "sheepdog-pane". Change nothing else.
+5. Run `sheepdog doctor` and fix anything it reports.
+6. Smoke test: create a throwaway git repo ~/code/sheepdog-smoke and a spec ~/code/specs/sheepdog-smoke/spec.md with `| **Status** | Herd |`, `| **Repos** | sheepdog-smoke |`, and one small requirement (e.g. an add(a, b) function with a unit test). Wait with `hc wait sheepdog-smoke-herder` (don't sleep or poll), then confirm the spec's Status says "Implemented (sheepdog signed off…)" and VERDICT.md starts with "Verdict: SIGNED-OFF". Show me the result, then press Enter in the Herder pane (`hc keys sheepdog-smoke-herder enter`) and delete the smoke repo and spec.
+7. If I have other machines in `hc machine ls`, ask whether to install there too (`sheepdog install --on <machine>`).
+```
+
 ## Install
 
 ```sh
