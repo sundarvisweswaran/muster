@@ -1,0 +1,6 @@
+# omp overlay for Sheepdog role agents only.
+# Unattended agents must not open the startup plan-mode review or stop for tool approval.
+plan:
+  defaultOnStartup: false
+tools:
+  approvalMode: yolo
