@@ -914,6 +914,10 @@ def install_local() -> None:
         if link.is_symlink() or link.exists():
             shutil.rmtree(link) if link.is_dir() and not link.is_symlink() else link.unlink()
         link.symlink_to(SKILLS / "muster")
+    omp_ext = HOME / ".omp" / "agent" / "extensions"
+    if (HOME / ".omp" / "agent").is_dir():  # `/herd` for your own omp sessions (role agents skip it)
+        omp_ext.mkdir(exist_ok=True)
+        shutil.copy2(SHARE / "integrations" / "omp" / "herd.ts", omp_ext / "muster-herd.ts")
     mod = ""
     if HERDR_MODS.is_dir():
         copytree(SHARE / "mods" / "muster-pane", HERDR_MODS / "muster-pane")
