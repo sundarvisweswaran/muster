@@ -1,8 +1,8 @@
-# Muster pane header
+# Muster
 
-A pane header that names each pane's role when it belongs to a Muster herd (plan → build → verify, one agent per role). Herder, Plotter, Tinker and Nitpick panes read `Plotter · omp`, `Tinker · claude` and so on. Every other pane looks exactly as it does with Herdr's shipped `pane` header.
+Plan → build → verify for one spec, with a separate coding agent for each step. Your agent drafts the plan, Plotter reviews it, Tinker builds it and Nitpick checks it, in the spec's own Herdr space. It also watches pull requests, fixing failed checks and review comments until they're green. This mod is Muster's pane header: each pane names its role (`Plotter · omp`) and links to the spec, and a click opens the spec in your editor in a split. Every other pane looks exactly as it does with Herdr's shipped `pane` header. The rest of Muster (the CLI, the watcher and the agent templates) installs from the repo's README.
 
-![Muster pane header](preview.png)
+![Muster](preview.png)
 
 ## What you see
 
