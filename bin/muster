@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""sheepdog: plan -> build -> verify for one spec, with a separate agent per role, on herdr.
+"""muster: plan -> build -> verify for one spec, with a separate agent per role, on herdr.
 
-  sheepdog install [--on MACHINE]   install/refresh on this machine (or an hc machine)
-  sheepdog doctor                   check this machine's setup
-  sheepdog start <spec dir>         start a herd now
-  sheepdog watch                    daemon: start a herd for every spec whose Status is the trigger (Herd)
-  sheepdog run <spec dir>           Herder itself (runs inside its own hc pane)
+  muster install [--on MACHINE]   install/refresh on this machine (or an hc machine)
+  muster doctor                   check this machine's setup
+  muster start <spec dir>         start a herd now
+  muster watch                    daemon: start a herd for every spec whose Status is the trigger (Herd)
+  muster run <spec dir>           Herder itself (runs inside its own hc pane)
 
-Config: ~/.config/sheepdog/config.toml (agent command per role, spec roots, trigger word).
+Config: ~/.config/muster/config.toml (agent command per role, spec roots, trigger word).
 Roles: Plotter plans, Tinker builds, Nitpick verifies; Herder (this script) drives the gates.
 """
 from __future__ import annotations
@@ -25,10 +25,10 @@ import uuid
 from pathlib import Path
 
 HOME = Path.home()
-CFG_DIR = HOME / ".config" / "sheepdog"
+CFG_DIR = HOME / ".config" / "muster"
 CFG_FILE = CFG_DIR / "config.toml"
-SHARE = HOME / ".local" / "share" / "sheepdog"
-BIN = HOME / ".local" / "bin" / "sheepdog"
+SHARE = HOME / ".local" / "share" / "muster"
+BIN = HOME / ".local" / "bin" / "muster"
 TEMPLATES = HOME / ".config" / "herdr-core" / "templates"
 SKILLS = HOME / ".agents" / "skills"
 HERDR_MODS = HOME / ".config" / "herdr-app" / "mods"
@@ -43,7 +43,7 @@ REPORTING = {"omp", "claude", "codex", "pi", "opencode", "amp", "droid", "gemini
 DOC = "herdr-app"
 GRID = [["herder", "plotter"], ["tinker", "nitpick"]]
 
-DEFAULT_CONFIG = """# Sheepdog config. Each role runs an interactive agent command of your choice.
+DEFAULT_CONFIG = """# Muster config. Each role runs an interactive agent command of your choice.
 spec_roots = ["~/code/specs"]   # each spec: <root>/<folder>/spec.md (or SPEC.md)
 trigger = "Herd"                # a spec's Status value that starts a herd
 
@@ -121,7 +121,7 @@ REPOS_RE = re.compile(FIELD_RE.format(key="Repos?"), re.M | re.I)
 
 
 def spec_roots(cfg: dict) -> list[Path]:
-    env = os.environ.get("SHEEPDOG_SPEC_ROOTS")
+    env = os.environ.get("MUSTER_SPEC_ROOTS")
     roots = env.split(":") if env else cfg["spec_roots"]
     return [Path(p).expanduser() for p in roots if p]
 
@@ -151,11 +151,11 @@ def herd_id(d: Path) -> str:
 
 
 def space_id(d: Path) -> str:
-    return "spsheepdog" + hashlib.sha1(str(d).encode()).hexdigest()[:20]
+    return "spmuster" + hashlib.sha1(str(d).encode()).hexdigest()[:20]
 
 
 def tab_id(d: Path) -> str:
-    return "tbsheepdog" + hashlib.sha1(str(d).encode()).hexdigest()[:20]
+    return "tbmuster" + hashlib.sha1(str(d).encode()).hexdigest()[:20]
 
 
 def resolve_repos(text: str, code_root: Path) -> list[Path]:
@@ -256,7 +256,7 @@ def write_layout(d: Path, folder: str, members: dict[str, str] | None) -> None:
 
 def labels(d: Path, role: str) -> list[str]:
     out: list[str] = []
-    for kv in (f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d)}", f"sheepdog.spec={d}", f"sheepdog.role={role}"):
+    for kv in (f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d)}", f"muster.spec={d}", f"muster.role={role}"):
         out += ["--label", kv]
     return out
 
@@ -267,9 +267,9 @@ def start(d: Path) -> str:
     d = d.expanduser().resolve()
     if not spec_file(d):
         raise RuntimeError(f"no spec.md or SPEC.md in {d}")
-    if live_terminals(**{"sheepdog.spec": str(d), "sheepdog.role": "herder"}):
+    if live_terminals(**{"muster.spec": str(d), "muster.role": "herder"}):
         return "already running"
-    me = shutil.which("sheepdog") or str(Path(__file__).resolve())
+    me = shutil.which("muster") or str(Path(__file__).resolve())
     out = hc("run", "--bg", "--no-parent", "--name", f"{herd_id(d)}-herder", "--cwd", str(d),
              *labels(d, "herder"), "--", sys.executable, me, "run", str(d))
     return out.get("address", "?")
@@ -278,7 +278,7 @@ def start(d: Path) -> str:
 def watch(interval: float = 5.0) -> None:
     cfg = config()
     trigger = cfg["trigger"].lower()
-    print(f"sheepdog watch: roots {', '.join(map(str, spec_roots(cfg)))}; trigger Status: {cfg['trigger']}", flush=True)
+    print(f"muster watch: roots {', '.join(map(str, spec_roots(cfg)))}; trigger Status: {cfg['trigger']}", flush=True)
     seen: dict[Path, float] = {}
     while True:
         for root in spec_roots(cfg):
@@ -291,10 +291,10 @@ def watch(interval: float = 5.0) -> None:
                     continue
                 stamp = time.strftime("%Y-%m-%d %H:%M:%S")
                 try:
-                    set_status(sf, "In progress (sheepdog)")
+                    set_status(sf, "In progress (muster)")
                     print(f"{stamp} start {d}: {start(d)}", flush=True)
                 except Exception as e:  # noqa: BLE001 - surface any launch failure in the spec itself
-                    set_status(sf, f"Sheepdog failed: {str(e)[:120]}")
+                    set_status(sf, f"Muster failed: {str(e)[:120]}")
                     print(f"{stamp} FAILED {d}: {e}", flush=True)
                 seen[sf] = sf.stat().st_mtime
         time.sleep(interval)
@@ -311,7 +311,7 @@ class Herder:
         self.members: dict[str, str] = {"herder": self.me}
         self.repos = resolve_repos(self.sf.read_text(), self.d.parent.parent) if self.sf else []
         self.cwd = self.repos[0] if self.repos else self.d.parent.parent
-        self.log_path = self.d / "sheepdog.log"
+        self.log_path = self.d / "muster.log"
 
     def osc(self, state: str) -> None:
         sys.stdout.write(f"\x1b]7501;state={state}:app=herder\x1b\\")
@@ -334,7 +334,7 @@ class Herder:
 
     def launch(self, role: str, task: str) -> None:
         out = hc("run", "--bg", "--name", self.name(role), "--cwd", str(self.cwd), *labels(self.d, role),
-                 f"sheepdog-{role}", task, check=False)
+                 f"muster-{role}", task, check=False)
         addr = out.get("address")
         if not addr:
             self.log(f"!! could not start {TITLES[role]}: {out}")
@@ -396,12 +396,12 @@ class Herder:
                 return
             elif "ESCALATE" in line:
                 escalated = True
-                self.set_spec_status("In progress (sheepdog escalated; see VERDICT.md)")
+                self.set_spec_status("In progress (muster escalated; see VERDICT.md)")
                 self.osc("blocked")
                 self.log("ESCALATED: Nitpick gave up after 3 rounds. Agents stay up; press Enter here once resolved.")
 
     def finish(self) -> None:
-        self.set_spec_status("Implemented (sheepdog signed off; see VERDICT.md)")
+        self.set_spec_status("Implemented (muster signed off; see VERDICT.md)")
         for role in ("nitpick", "tinker", "plotter"):
             if role in self.members:
                 subprocess.run(["hc", "kill", self.name(role)], capture_output=True)
@@ -420,7 +420,7 @@ def run(d: Path) -> None:
     try:
         herder.run()
     except Exception as e:  # noqa: BLE001 - surface any crash in the spec and keep the pane open
-        herder.set_spec_status(f"Sheepdog failed: {str(e)[:120]}")
+        herder.set_spec_status(f"Muster failed: {str(e)[:120]}")
         herder.osc("blocked")
         herder.log(f"!! Herder crashed: {e!r}")
         print("\nPress Enter to close.", flush=True)
@@ -436,20 +436,20 @@ def write_templates(cfg: dict) -> None:
         rc = cfg["roles"][role]
         cmd = agent_command(rc["command"])
         ready = rc.get("ready") or ("" if agent_name(rc["command"]) in REPORTING else "quiet")
-        head = [f"description: Sheepdog {TITLES[role]}: {BLURB[role]}. Started by Herder; task: spec dir, herder, repos, peers.",
-                f"command: SHEEPDOG_ROLE={TITLES[role]} {cmd}"]
+        head = [f"description: Muster {TITLES[role]}: {BLURB[role]}. Started by Herder; task: spec dir, herder, repos, peers.",
+                f"command: MUSTER_ROLE={TITLES[role]} {cmd}"]
         head += [f"ready: {ready}"] if ready else []
         head += [f"{k}: {rc[k]}" for k in ("submit", "stop", "paste_gap_ms") if k in rc]
-        (TEMPLATES / f"sheepdog-{role}.md").write_text("---\n" + "\n".join(head) + "\n---\n" + role_prompt(role))
+        (TEMPLATES / f"muster-{role}.md").write_text("---\n" + "\n".join(head) + "\n---\n" + role_prompt(role))
 
 
 def install_service() -> str:
     py = sys.executable
     path = f"{HOME}/.local/bin:{HOME}/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     if sys.platform == "darwin":
-        label = "dev.herdr.sheepdog"
+        label = "dev.herdr.muster"
         plist = HOME / "Library" / "LaunchAgents" / f"{label}.plist"
-        log = HOME / "Library" / "Logs" / "sheepdog.log"
+        log = HOME / "Library" / "Logs" / "muster.log"
         plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -464,10 +464,10 @@ def install_service() -> str:
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], capture_output=True)
         subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=True)
         return f"launchd {label} (log {log})"
-    unit = HOME / ".config" / "systemd" / "user" / "sheepdog.service"
+    unit = HOME / ".config" / "systemd" / "user" / "muster.service"
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text(f"""[Unit]
-Description=Sheepdog: start the plan/build/verify herd for specs marked with the trigger Status
+Description=Muster: start the plan/build/verify herd for specs marked with the trigger Status
 
 [Service]
 ExecStart={py} {BIN} watch
@@ -479,9 +479,9 @@ RestartSec=5
 WantedBy=default.target
 """)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "sheepdog.service"], check=True, capture_output=True)
-    subprocess.run(["systemctl", "--user", "restart", "sheepdog.service"], check=True)
-    return "systemd --user sheepdog.service (journalctl --user -u sheepdog)"
+    subprocess.run(["systemctl", "--user", "enable", "muster.service"], check=True, capture_output=True)
+    subprocess.run(["systemctl", "--user", "restart", "muster.service"], check=True)
+    return "systemd --user muster.service (journalctl --user -u muster)"
 
 
 def copytree(src: Path, dst: Path) -> None:
@@ -492,7 +492,7 @@ def copytree(src: Path, dst: Path) -> None:
 
 def install_local() -> None:
     if not shutil.which("hc"):
-        sys.exit("sheepdog needs herdr-core's `hc` on PATH: https://herdr.dev/download/")
+        sys.exit("muster needs herdr-core's `hc` on PATH: https://herdr.dev/download/")
     SHARE.mkdir(parents=True, exist_ok=True)
     if REPO != SHARE:
         for sub in ("roles", "integrations", "mods", "skill"):
@@ -508,26 +508,26 @@ def install_local() -> None:
     write_templates(cfg)
     for root in spec_roots(cfg):
         root.mkdir(parents=True, exist_ok=True)
-    copytree(SHARE / "skill", SKILLS / "sheepdog")
+    copytree(SHARE / "skill", SKILLS / "muster")
     mod = ""
     if HERDR_MODS.is_dir():
-        copytree(SHARE / "mods" / "sheepdog-pane", HERDR_MODS / "sheepdog-pane")
-        mod = f"\n  herdr mod: {HERDR_MODS / 'sheepdog-pane'} (set it as your layout's pane header to see roles)"
+        copytree(SHARE / "mods" / "muster-pane", HERDR_MODS / "muster-pane")
+        mod = f"\n  herdr mod: {HERDR_MODS / 'muster-pane'} (set it as your layout's pane header to see roles)"
     svc = install_service()
     agents = ", ".join(f"{r}={cfg['roles'][r]['command']}" for r in ROLES)
-    print(f"sheepdog installed\n  cli: {BIN}\n  config: {CFG_FILE} ({agents})\n  templates: {TEMPLATES}/sheepdog-*.md"
-          f"\n  skill: {SKILLS / 'sheepdog'}{mod}\n  watcher: {svc}")
+    print(f"muster installed\n  cli: {BIN}\n  config: {CFG_FILE} ({agents})\n  templates: {TEMPLATES}/muster-*.md"
+          f"\n  skill: {SKILLS / 'muster'}{mod}\n  watcher: {svc}")
 
 
 def install_remote(machine: str) -> None:
-    dest = ".local/share/sheepdog-src"
+    dest = ".local/share/muster-src"
     files = [p for p in REPO.rglob("*") if p.is_file() and ".git" not in p.parts]
     for p in files:
         rel = p.relative_to(REPO)
         r = subprocess.run(["hc", "file", "write", "--on", machine, f"{dest}/{rel}"], input=p.read_bytes(), capture_output=True)
         if r.returncode:
             sys.exit(f"copy {rel} to {machine} failed: {r.stderr.decode().strip()}")
-    r = subprocess.run(["hc", "exec", "--on", machine, "--", "sh", "-c", f"python3 ~/{dest}/bin/sheepdog install"])
+    r = subprocess.run(["hc", "exec", "--on", machine, "--", "sh", "-c", f"python3 ~/{dest}/bin/muster install"])
     sys.exit(r.returncode)
 
 
@@ -537,13 +537,13 @@ def doctor() -> None:
     for role in ROLES:
         cmd = cfg["roles"][role]["command"]
         checks.append((f"{role}: `{agent_name(cmd)}` on PATH", bool(shutil.which(agent_name(cmd)))))
-        checks.append((f"template sheepdog-{role}", (TEMPLATES / f"sheepdog-{role}.md").is_file()))
+        checks.append((f"template muster-{role}", (TEMPLATES / f"muster-{role}.md").is_file()))
     for root in spec_roots(cfg):
         checks.append((f"spec root {root}", root.is_dir()))
     if sys.platform == "darwin":
-        ok = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/dev.herdr.sheepdog"], capture_output=True).returncode == 0
+        ok = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/dev.herdr.muster"], capture_output=True).returncode == 0
     else:
-        ok = subprocess.run(["systemctl", "--user", "is-active", "-q", "sheepdog"]).returncode == 0
+        ok = subprocess.run(["systemctl", "--user", "is-active", "-q", "muster"]).returncode == 0
     checks.append(("watcher running", ok))
     for label, good in checks:
         print(f"{'ok ' if good else 'BAD'}  {label}")

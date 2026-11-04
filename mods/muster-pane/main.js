@@ -1,9 +1,9 @@
 // A pane's header, for layouts that frame their panes:
-//   { "tab": "active", "pane": { "header": { "content": { "mod": "sheepdog-pane" } } } }
+//   { "tab": "active", "pane": { "header": { "content": { "mod": "muster-pane" } } } }
 // Shows the program's icon (the app's program table), the agent's name or
 // the terminal's title, the folder, and the agent's status; buttons split, zoom and close
 // this pane. Props from the app: { pane, terminal }. Click: focus the pane.
-// Clone of the shipped `pane` mod: terminals labeled sheepdog.role=<role> (Sheepdog
+// Clone of the shipped `pane` mod: terminals labeled muster.role=<role> (Muster
 // agents) lead with their role, e.g. "Plotter · omp"; every other pane is unchanged.
 
 import { View, div, svg, image } from "gpui-kit";
@@ -18,7 +18,7 @@ function roleOf(address) {
   const machine = address.includes("/") ? address.slice(0, address.indexOf("/")) : null;
   const term = terminals().find((x) => x.address === address
     || (x.address === local && (x.machine ?? null) === machine));
-  return ROLES[term?.labels?.["sheepdog.role"]] ?? null;
+  return ROLES[term?.labels?.["muster.role"]] ?? null;
 }
 
 function icon(p, size, color) {
@@ -50,7 +50,7 @@ export default class Pane extends View {
         cx.stop_propagation();
         run(command, args);
       })
-      .child(svg(`mods/sheepdog-pane/${icon}.svg`).size(14));
+      .child(svg(`mods/muster-pane/${icon}.svg`).size(14));
   }
 
   render(cx) {

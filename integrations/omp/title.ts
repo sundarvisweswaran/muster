@@ -1,5 +1,5 @@
-// Names a Sheepdog agent's omp session "<Role> · <spec>" so its Herdr pane title shows the role.
-// Role comes from SHEEPDOG_ROLE (set by the template command); spec from the first message's "Spec dir: <path>".
+// Names a Muster agent's omp session "<Role> · <spec>" so its Herdr pane title shows the role.
+// Role comes from MUSTER_ROLE (set by the template command); spec from the first message's "Spec dir: <path>".
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 function inputText(event: unknown): string {
@@ -8,7 +8,7 @@ function inputText(event: unknown): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	const role = process.env.SHEEPDOG_ROLE;
+	const role = process.env.MUSTER_ROLE;
 	if (!role) return;
 	pi.on("input", async event => {
 		if (pi.getSessionName()) return;

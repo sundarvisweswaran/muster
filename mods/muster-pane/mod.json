@@ -1,6 +1,6 @@
 {
   "place": "none",
-  "title": "Pane header (Sheepdog roles)",
+  "title": "Pane header (Muster roles)",
   "cloned_from": {
     "name": "pane",
     "version": "0.1.13"
