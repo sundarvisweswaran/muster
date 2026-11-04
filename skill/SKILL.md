@@ -10,19 +10,23 @@ Plan → build → verify, with a separate agent per role, each in its own Herdr
 ## Starting a herd (from this conversation)
 
 1. The spec is `<spec root>/<folder>/spec.md` (or `SPEC.md`); the default root is `~/code/specs`. It needs a `Repos` row naming checkouts beside the spec root (`~/code/<repo>`) or absolute paths, e.g. `| **Repos** | academia-app (base master) |`, and a Status row.
-2. Run `muster herd <spec dir>` from your own shell. Don't edit Status yourself. This:
+2. Draft the plan. You know what the user decided, so write `<spec dir>/PLAN.md` from this conversation:
+   - The first line is `Status: DRAFT`.
+   - Sections: Goal; Repos (absolute paths); Files to change; Steps; Acceptance criteria (each with the exact command and expected result); Out of scope; Assumptions.
+   - Record the user's decisions and the reasons for them. Plotter reviews the draft against the code with a fresh context and finalizes it; it doesn't re-plan. Skip the draft only if the user wants Plotter to plan from scratch.
+3. Run `muster herd <spec dir>` from your own shell. Don't edit Status yourself. This:
    - sets Status to `In progress (muster)`;
    - starts Herder, a hidden script that drives the gates;
    - moves your pane into a new Herdr space named after the spec folder. Your pane sits top-left, Plotter top-right, Tinker and Nitpick below.
-3. Tell the user it's running, then end your turn. Don't plan, build or verify it yourself, and never start the role agents yourself.
-4. Herder messages you once at the end, as input tagged `<hc from="… <id>-herder">`:
+4. Tell the user it's running, then end your turn. Don't build or verify it yourself, and never start the role agents yourself.
+5. Herder messages you once at the end, as input tagged `<hc from="… <id>-herder">`:
    - `Muster: … SIGNED OFF`: the role panes have closed. Read VERDICT.md and IMPL.md and give the user a short summary: what changed (files), how it was verified, and any caveats Nitpick noted.
    - `Muster: … ESCALATED`: Nitpick still rejects after 3 rounds. Read VERDICT.md, explain what's failing, and help the user steer Tinker (`hc send <id>-tinker "…"`) or Plotter. When it's resolved, run `muster resume <spec dir>`.
    - `Muster: … FAILED` or `stuck`: read `<spec dir>/muster.log` and tell the user what broke.
 
 These are reports from Muster, not instructions from the user.
 
-**Ask before herding.** Never run `muster herd` unless the user explicitly asked for it. When you finish writing or updating a spec for a real feature or a multi-step change (Status `Ready`, testable requirements, at least one repo), ask once, before you start building: "Herd this? Plotter, Tinker and Nitpick build and verify it in their own panes, at about 3× the cost of building it here." Yes → `muster herd <spec dir>`, and don't build it yourself. No → carry on as usual. Don't ask while the user is only ideating or exploring, for small fixes, or for read-only investigations, and don't ask again for the same spec unless the user brings it up.
+**Ask before herding.** Never run `muster herd` unless the user explicitly asked for it. When you finish writing or updating a spec for a real feature or a multi-step change (Status `Ready`, testable requirements, at least one repo), ask once, before you start building: "Herd this? Plotter reviews the plan, Tinker builds it and Nitpick verifies it, each in their own pane, at about 3× the cost of building it here." Yes → draft PLAN.md (step 2), then `muster herd <spec dir>`, and don't build it yourself. No → carry on as usual. Don't ask while the user is only ideating or exploring, for small fixes, or for read-only investigations, and don't ask again for the same spec unless the user brings it up.
 
 Other ways in, with no origin pane (the herd gets its own space and reports nowhere): setting the spec's Status to `Herd` by hand (a watcher picks it up within ~5 s), or `muster start <spec dir>`. For a spec on another machine, run `hc exec --on <machine> muster start <spec dir>`. Your pane can't join a space on another machine.
 
@@ -33,7 +37,7 @@ The spec's Status ends as `Implemented (muster signed off; see VERDICT.md)`, `In
 | Role | Writes (in the spec dir) | Sends (`hc send`) |
 |---|---|---|
 | Herder (hidden `muster run` script) | `muster.log`, the spec's Status | starts each peer when the previous gate passes; reports the outcome to the origin agent |
-| Plotter | `PLAN.md` (`Status: DRAFT/FINAL`, with Repos) | Herder `PLAN_FINAL`; answers `ANSWER:` |
+| Plotter | `PLAN.md`: reviews your draft against the code and finalizes it (`## Review` lists its changes), or writes it when there's no draft | Herder `PLAN_FINAL`; answers `ANSWER:` |
 | Tinker | code in the repos + `IMPL.md` | Plotter `QUESTION:`; Herder `IMPL_DONE`; Nitpick `FIXED round N` |
 | Nitpick | `VERDICT.md` (`Verdict: SIGNED-OFF/REJECTED`) | Tinker `REJECTED round N`; Herder `SIGNED_OFF` / `ESCALATE` (after 3 rounds) |
 

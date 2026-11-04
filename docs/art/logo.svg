@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <clipPath id="disc"><circle cx="256" cy="256" r="256"/></clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9a8cff"/><stop offset="1" stop-color="#5a49e6"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#disc)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <!-- body wool -->
+    <g fill="#f4efe6">
+      <circle cx="120" cy="525" r="110"/><circle cx="256" cy="550" r="120"/><circle cx="392" cy="525" r="110"/>
+      <circle cx="58" cy="475" r="58"/><circle cx="454" cy="475" r="58"/>
+    </g>
+    <!-- ears -->
+    <g transform="rotate(-28 150 262)">
+      <ellipse cx="150" cy="262" rx="62" ry="26" fill="#2b2733"/>
+      <ellipse cx="146" cy="262" rx="42" ry="13" fill="#d99a8c"/>
+    </g>
+    <g transform="rotate(28 362 262)">
+      <ellipse cx="362" cy="262" rx="62" ry="26" fill="#2b2733"/>
+      <ellipse cx="366" cy="262" rx="42" ry="13" fill="#d99a8c"/>
+    </g>
+    <!-- face -->
+    <path d="M256 196 C 330 196 352 262 346 322 C 340 392 300 432 256 432 C 212 432 172 392 166 322 C 160 262 182 196 256 196 Z" fill="#2b2733"/>
+    <ellipse cx="256" cy="380" rx="56" ry="42" fill="#3a3544"/>
+    <path d="M256 375 v16 M256 391 q-14 12 -26 4 M256 391 q14 12 26 4" stroke="#17141c" stroke-width="6" fill="none" stroke-linecap="round"/>
+    <ellipse cx="256" cy="366" rx="14" ry="9" fill="#17141c"/>
+    <!-- eyes -->
+    <ellipse cx="216" cy="300" rx="17" ry="19" fill="#fbf8f2"/>
+    <ellipse cx="296" cy="300" rx="17" ry="19" fill="#fbf8f2"/>
+    <circle cx="219" cy="304" r="9" fill="#17141c"/>
+    <circle cx="293" cy="304" r="9" fill="#17141c"/>
+    <circle cx="222" cy="300" r="3.2" fill="#fff"/>
+    <circle cx="296" cy="300" r="3.2" fill="#fff"/>
+    <!-- wool crown -->
+    <g fill="#f4efe6">
+      <circle cx="256" cy="168" r="62"/>
+      <circle cx="196" cy="186" r="48"/><circle cx="316" cy="186" r="48"/>
+      <circle cx="164" cy="222" r="34"/><circle cx="348" cy="222" r="34"/>
+      <circle cx="226" cy="232" r="34"/><circle cx="286" cy="232" r="34"/>
+      <circle cx="256" cy="244" r="30"/>
+    </g>
+    <g fill="none" stroke="#e4dccd" stroke-width="5" stroke-linecap="round">
+      <path d="M226 150 q10 -12 22 -2"/><path d="M284 172 q9 -10 19 -1"/><path d="M190 200 q8 -9 17 -1"/>
+    </g>
+    <!-- pass-muster badge -->
+    <circle cx="388" cy="394" r="68" fill="#12142a"/>
+    <circle cx="388" cy="394" r="57" fill="#5be0a8"/>
+    <path d="M362 396 l18 19 l35 -40" stroke="#12142a" stroke-width="14" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

@@ -1,17 +1,28 @@
-# Muster
+<p align="center"><img src="muster.png" width="150" alt="Muster"></p>
 
-Plan → build → verify for one spec, with a separate coding agent for each step, side by side in [Herdr](https://herdr.dev).
+<h1 align="center">Muster</h1>
 
-![Muster running a spec: Herder starts Plotter, Tinker and Nitpick in a 2×2 Herdr space; Tinker asks Plotter a question, Nitpick rejects round 1, Tinker fixes it, Nitpick signs off](docs/demo.gif)
+<p align="center"><b>Does your spec pass muster?</b><br>Plan → build → verify for one spec, with a separate coding agent for each step, side by side in <a href="https://herdr.dev">Herdr</a>.</p>
 
-*A real run, sped up about 6×: spec Status set to `Herd` → plan → build (Tinker asks Plotter a question) → Nitpick rejects round 1 → fix → signed off, in under 2 minutes.*
+![Muster running a spec: your agent drafts the plan and starts the herd; its pane joins Plotter, Tinker and Nitpick in the spec's own space; Nitpick rejects round 1, Tinker fixes it, Nitpick signs off and your agent summarizes](docs/demo.gif)
 
-The flow: you ideate with your agent and it writes the spec. When you say "let's herd this" (or accept its offer), it runs `muster herd <spec dir>`. Your agent's pane moves into a new Herdr space named after the spec, next to the three role agents:
+*A real run, sped up about 10×: "let's herd this" → your agent drafts PLAN.md → its pane joins the herd's space → Plotter reviews the plan → Tinker builds (and asks Plotter a question) → Nitpick rejects round 1 → fix → signed off → your agent summarizes and the spec opens from its link. About 3½ minutes in real time.*
+
+## Screenshots
 
 | | |
 |---|---|
-| **Your agent**: where you started; gets the outcome | **Plotter**: writes `PLAN.md` |
+| ![The herd space](docs/screenshots/herd.png) | ![The outcome and the spec link](docs/screenshots/spec-link.png) |
+| The herd's own space: your agent (top left) beside Plotter, Tinker and Nitpick. Each header names its role and links to the spec. | After sign-off, only your agent remains, with its summary. Clicking the spec link opens the spec in your editor, in a split. |
+
+The flow: you ideate with your agent and it writes the spec. When you say "let's herd this" (or accept its offer), it drafts `PLAN.md` from your conversation and runs `muster herd <spec dir>`. Your agent's pane moves into a new Herdr space named after the spec, next to the three role agents:
+
+| | |
+|---|---|
+| **Your agent**: where you started; drafts the plan, gets the outcome | **Plotter**: reviews the draft against the code with a fresh context, fixes gaps, finalizes it |
 | **Tinker**: builds the FINAL plan | **Nitpick**: re-checks everything, rejects or signs off |
+
+Nobody plans twice. Your agent knows what you decided, and Plotter checks that against the code: real file paths, a step and an acceptance command for every requirement. Every change it makes is listed under `## Review` in `PLAN.md`. Plotter writes a plan from scratch only for hands-off herds, which have no draft.
 
 The agents talk to each other directly with `hc send`: Tinker asks Plotter questions, and Nitpick sends rejections back to Tinker until it signs off (or escalates after 3 rounds). A hidden script, Herder, starts each one when the previous gate passes. When it's done, the role panes close, the spec's Status says `Implemented (muster signed off…)`, and your agent gets the result and summarizes it. You're left with one space for the item: your conversation, with the outcome.
 
@@ -59,16 +70,22 @@ git clone <this repo> ~/code/muster
 muster doctor
 ```
 
-`install` puts these in place:
-- the CLI at `~/.local/bin/muster` and a default `~/.config/muster/config.toml`;
-- herdr-core templates `muster-{plotter,tinker,nitpick}`;
-- the skill at `~/.agents/skills/muster`, so agents know to offer a herd once a spec is written (they ask first);
-- a watcher service (launchd on macOS, `systemd --user` on Linux);
-- the `muster-pane` Herdr mod, if the Herdr app is installed.
+`install` refreshes everything and keeps your config, so re-running it is safe. To see roles in the pane headers, set your layout's pane header to the mod: in `~/.config/herdr-app/layouts/<layout>.json`, change `"header": {"content": {"mod": "pane"}}` to `"mod": "muster-pane"`. Other panes look the same as before.
 
-Re-running it is safe: it refreshes everything and keeps your config.
+## What it installs and does
 
-To see roles in the pane headers, set your layout's pane header to the mod: in `~/.config/herdr-app/layouts/<layout>.json`, change `"header": {"content": {"mod": "pane"}}` to `"mod": "muster-pane"`. Other panes look the same as before.
+Read this before you install it:
+
+- **The `muster` CLI**, at `~/.local/bin/muster`, plus its files in `~/.local/share/muster` and your config in `~/.config/muster/config.toml`.
+- **A background watcher on each machine.** It's a launchd user agent `dev.herdr.muster` on macOS, or a `systemd --user` unit `muster.service` on Linux. It checks your spec roots every 5 s and starts a herd when a spec's Status says `Herd`. Nothing else triggers it.
+- **Agents that run without permission prompts.** Each herd starts three coding agents through herdr-core (`hc run`), using the herdr-core templates `muster-{plotter,tinker,nitpick}` in `~/.config/herdr-core/templates/`. They can run any command in the repos the spec names, and they write `PLAN.md`, `IMPL.md` and `VERDICT.md` next to the spec. Tinker edits your checkout directly; there's no separate worktree, and nothing is committed unless the plan says so. Muster adds these flags:
+  - omp: a settings overlay with no startup plan mode and `approvalMode: yolo`, plus a title extension;
+  - Codex: `--sandbox workspace-write --ask-for-approval never`, unless you set a policy yourself;
+  - Codex and Claude: the spec roots, passed with `--add-dir`.
+- **Changes to your Herdr layout document.** Herder writes each herd's space into herdr-core's `herdr-app` document. With `muster herd`, it moves the calling agent's pane into that space and closes the space it came from if that leaves it empty.
+- **The `muster` skill**, in `~/.agents/skills/muster`, linked from `~/.claude/skills/muster` when Claude Code is installed. It tells your agent to ask before starting a herd and how to read the results.
+- **The `muster-pane` Herdr mod**, if the Herdr app is installed. It only draws pane headers. Its one action is opening your editor on the spec when you click the link.
+- **No network calls of its own.** The agents use their own network as usual.
 
 ## Configure
 
@@ -90,7 +107,9 @@ command = "codex --model gpt-5"
 
 Then run `muster install` again. The editor is resolved on the machine running the herd, so a herd on a remote box opens the spec there.
 
-**Unattended running.** Agents must not stop for permission prompts. Use your agent's own flag (Claude `--dangerously-skip-permissions`, etc.). For omp, Muster adds an overlay that turns off startup plan mode and approval prompts, plus an extension that titles each session `<Role> · <spec>`. Codex automatically gets `--no-daemon`, which hc requires.
+**Unattended running.** Agents must not stop for permission prompts. Use your agent's own flag (Claude `--dangerously-skip-permissions`, etc.). For omp, Muster adds an overlay that turns off startup plan mode and approval prompts, plus an extension that titles each session `<Role> · <spec>`. Codex gets `--no-daemon`, which hc requires, and `--sandbox workspace-write --ask-for-approval never`, because Codex otherwise starts read-only. Claude and Codex also get the spec roots as writable folders (`--add-dir`).
+
+**Tested agents.** omp is tested end to end in every role. Claude Code and Codex get the flags above but haven't run a herd yet. Claude asks once to accept `--dangerously-skip-permissions` and once per new folder to trust it. Until someone answers in its pane (it shows Needs you), its task waits and Herder logs `task NOT delivered`.
 
 **Agents that don't report status to Herdr** get `ready = "quiet"` (wait for the screen to settle). Set it yourself for agents not on the built-in list.
 

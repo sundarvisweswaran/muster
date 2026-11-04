@@ -39,7 +39,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 ROLES = ("plotter", "tinker", "nitpick")
 TITLES = {"herder": "Herder", "plotter": "Plotter", "tinker": "Tinker", "nitpick": "Nitpick"}
-BLURB = {"plotter": "plans the spec into PLAN.md", "tinker": "builds the FINAL plan",
+BLURB = {"plotter": "reviews the draft PLAN.md (or writes one) and finalizes it", "tinker": "builds the FINAL plan",
          "nitpick": "verifies independently and signs off"}
 # Agents known to report status to herdr (OSC 7501); others get `ready: quiet`.
 REPORTING = {"omp", "claude", "codex", "pi", "opencode", "amp", "droid", "gemini", "kimi", "qwen", "cursor-agent", "devin"}
@@ -102,13 +102,23 @@ def agent_name(command: str) -> str:
     return Path(shlex.split(command)[0]).name
 
 
-def agent_command(command: str) -> str:
-    """Per-agent adjustments so an agent can run unattended under hc."""
+def agent_command(command: str, writable: list[Path]) -> str:
+    """Per-agent adjustments so an agent can run unattended under hc. `writable`: the spec roots, which
+    sit outside the repo the agent starts in but must be writable (PLAN.md, IMPL.md, VERDICT.md)."""
     name = agent_name(command)
+    args = set(shlex.split(command))
+    dirs = "".join(f" --add-dir {shlex.quote(str(p))}" for p in writable)
     if name == "omp":
         command += f" --config {shlex.quote(str(CFG_DIR / 'omp' / 'overlay.yml'))} -e {shlex.quote(str(CFG_DIR / 'omp' / 'title.ts'))}"
-    elif name == "codex" and "--no-daemon" not in command:
-        command += " --no-daemon"  # hc requirement: otherwise codex runs commands outside the terminal
+    elif name == "claude":
+        command += dirs
+    elif name == "codex":
+        if "--no-daemon" not in args:
+            command += " --no-daemon"  # hc requirement: otherwise codex runs commands outside the terminal
+        if not args & {"--sandbox", "-s", "--ask-for-approval", "-a", "--yolo", "--dangerously-bypass-approvals-and-sandbox"}:
+            # Started plainly, codex is read-only and ignores --add-dir.
+            command += " --sandbox workspace-write --ask-for-approval never -c sandbox_workspace_write.network_access=true"
+        command += dirs
     return command
 
 
@@ -460,7 +470,10 @@ class Herder:
         if self.origin:
             subprocess.run(["hc", "label", self.origin, f"herdr.space={space_id(self.d)}", f"herdr.tab={tab_id(self.d)}",
                             *spec_labels(self.d)], capture_output=True)
-        self.launch("plotter", f"{common} Tinker will be {self.name('tinker')}.")
+        draft = (self.d / "PLAN.md").is_file()
+        self.log(f"plan: {'draft PLAN.md found; Plotter reviews it' if draft else 'no draft; Plotter writes PLAN.md'}")
+        self.launch("plotter", f"{common} " + ("A draft PLAN.md is waiting: review it, don't re-plan. " if draft else "There is no draft PLAN.md: write it. ")
+                    + f"Tinker will be {self.name('tinker')}.")
         escalated = False
         for raw in sys.stdin:
             line = raw.strip()
@@ -523,7 +536,7 @@ def write_templates(cfg: dict) -> None:
     TEMPLATES.mkdir(parents=True, exist_ok=True)
     for role in ROLES:
         rc = cfg["roles"][role]
-        cmd = agent_command(rc["command"])
+        cmd = agent_command(rc["command"], spec_roots(cfg))
         ready = rc.get("ready") or ("" if agent_name(rc["command"]) in REPORTING else "quiet")
         head = [f"description: Muster {TITLES[role]}: {BLURB[role]}. Started by Herder; task: spec dir, herder, repos, peers.",
                 f"command: MUSTER_ROLE={TITLES[role]} {cmd}"]
@@ -598,6 +611,12 @@ def install_local() -> None:
     for root in spec_roots(cfg):
         root.mkdir(parents=True, exist_ok=True)
     copytree(SHARE / "skill", SKILLS / "muster")
+    claude_skills = HOME / ".claude" / "skills"
+    if claude_skills.is_dir():  # Claude Code reads ~/.claude/skills, most other agents ~/.agents/skills
+        link = claude_skills / "muster"
+        if link.is_symlink() or link.exists():
+            shutil.rmtree(link) if link.is_dir() and not link.is_symlink() else link.unlink()
+        link.symlink_to(SKILLS / "muster")
     mod = ""
     if HERDR_MODS.is_dir():
         copytree(SHARE / "mods" / "muster-pane", HERDR_MODS / "muster-pane")
