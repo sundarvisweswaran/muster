@@ -2,6 +2,10 @@
 
 Plan → build → verify for one spec, with a separate coding agent for each step, side by side in [Herdr](https://herdr.dev).
 
+![Sheepdog running a spec: Herder starts Plotter, Tinker and Nitpick in a 2×2 Herdr space; Tinker asks Plotter a question, Nitpick rejects round 1, Tinker fixes it, Nitpick signs off](docs/demo.gif)
+
+*A real run, sped up about 6×: spec Status set to `Herd` → plan → build (Tinker asks Plotter a question) → Nitpick rejects round 1 → fix → signed off, in under 2 minutes.*
+
 Set a spec's Status to `Herd`. The herd opens in its own Herdr space, named after the spec, with four panes:
 
 | | |
