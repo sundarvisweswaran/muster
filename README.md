@@ -6,14 +6,16 @@ Plan → build → verify for one spec, with a separate coding agent for each st
 
 *A real run, sped up about 6×: spec Status set to `Herd` → plan → build (Tinker asks Plotter a question) → Nitpick rejects round 1 → fix → signed off, in under 2 minutes.*
 
-Set a spec's Status to `Herd`. The herd opens in its own Herdr space, named after the spec, with four panes:
+The flow: you ideate with your agent and it writes the spec. When you say "let's herd this" (or accept its offer), it runs `muster herd <spec dir>`. Your agent's pane moves into a new Herdr space named after the spec, next to the three role agents:
 
 | | |
 |---|---|
-| **Herder**: drives the gates, relays messages | **Plotter**: writes `PLAN.md` |
+| **Your agent**: where you started; gets the outcome | **Plotter**: writes `PLAN.md` |
 | **Tinker**: builds the FINAL plan | **Nitpick**: re-checks everything, rejects or signs off |
 
-The agents talk to each other directly with `hc send`: Tinker asks Plotter questions, and Nitpick sends rejections back to Tinker until it signs off (or escalates after 3 rounds). The spec's Status ends as `Implemented (muster signed off…)`.
+The agents talk to each other directly with `hc send`: Tinker asks Plotter questions, and Nitpick sends rejections back to Tinker until it signs off (or escalates after 3 rounds). A hidden script, Herder, starts each one when the previous gate passes. When it's done, the role panes close, the spec's Status says `Implemented (muster signed off…)`, and your agent gets the result and summarizes it. You're left with one space for the item: your conversation, with the outcome.
+
+Every herd pane's header has a 📄 link to the spec. Click it to open the spec in a split pane, in your editor.
 
 ## Why
 
@@ -44,7 +46,7 @@ Set up Muster (https://github.com/sundarvisweswaran/muster) on this machine and 
 3. Ask me which agent should run each role: Plotter (plans), Tinker (builds), Nitpick (verifies). Use only agents installed and logged in here; suggest a different model for Nitpick than for Tinker. Write them to ~/.config/muster/config.toml, with whatever flag each agent needs to run without permission prompts, then run `muster install` again.
 4. If the Herdr app is installed, set the pane header in my active layout (~/.config/herdr-app/layouts/<layout>.json, "header" → "content" → "mod") to "muster-pane". Change nothing else.
 5. Run `muster doctor` and fix anything it reports.
-6. Smoke test: create a throwaway git repo ~/code/muster-smoke and a spec ~/code/specs/muster-smoke/spec.md with `| **Status** | Herd |`, `| **Repos** | muster-smoke |`, and one small requirement (e.g. an add(a, b) function with a unit test). Wait with `hc wait muster-smoke-herder` (don't sleep or poll), then confirm the spec's Status says "Implemented (muster signed off…)" and VERDICT.md starts with "Verdict: SIGNED-OFF". Show me the result, then press Enter in the Herder pane (`hc keys muster-smoke-herder enter`) and delete the smoke repo and spec.
+6. Smoke test: create a throwaway git repo ~/code/muster-smoke and a spec ~/code/specs/muster-smoke/spec.md with `| **Status** | Ready |`, `| **Repos** | muster-smoke |`, and one small requirement (e.g. an add(a, b) function with a unit test). Run `muster herd ~/code/specs/muster-smoke` from your own shell: your pane joins the herd's space. End your turn; Herder sends you a "Muster: … SIGNED OFF" message when it's done. Then confirm the spec's Status says "Implemented (muster signed off…)" and VERDICT.md starts with "Verdict: SIGNED-OFF", show me the result, and delete the smoke repo and spec.
 7. If I have other machines in `hc machine ls`, ask whether to install there too (`muster install --on <machine>`).
 ```
 
@@ -74,6 +76,7 @@ To see roles in the pane headers, set your layout's pane header to the mod: in `
 # ~/.config/muster/config.toml
 spec_roots = ["~/code/specs"]
 trigger = "Herd"
+editor = "nvim"   # opens the spec link; default: $VISUAL/$EDITOR, else nvim/hx/vim/nano/vi
 
 [roles.plotter]
 command = "omp"
@@ -85,7 +88,7 @@ command = "claude --dangerously-skip-permissions"
 command = "codex --model gpt-5"
 ```
 
-Then run `muster install` again.
+Then run `muster install` again. The editor is resolved on the machine running the herd, so a herd on a remote box opens the spec there.
 
 **Unattended running.** Agents must not stop for permission prompts. Use your agent's own flag (Claude `--dangerously-skip-permissions`, etc.). For omp, Muster adds an overlay that turns off startup plan mode and approval prompts, plus an extension that titles each session `<Role> · <spec>`. Codex automatically gets `--no-daemon`, which hc requires.
 
@@ -103,11 +106,19 @@ Then run `muster install` again.
 ```
 or `**Status:** Herd`, or `Status: Herd`. Repo names resolve to `<spec root>/../<name>`. If none resolve, Plotter finds the checkouts and lists them in `PLAN.md`.
 
+## Ways to start a herd
+
+- **From your agent:** `muster herd <spec dir>`. The skill makes this the default, and the agent asks before herding. Your agent's pane joins the herd's space and gets the outcome.
+- **Hands-off:** set the spec's Status to `Herd` in any editor. The watcher starts it within ~5 s. There's no origin pane; the space closes once it's signed off.
+- **By hand:** `muster start <spec dir>`. Same as hands-off, without touching Status.
+- If a herd escalates, Nitpick still rejects after 3 rounds and everything stays up. Steer Tinker or Plotter in their panes, then run `muster resume <spec dir>`.
+
 ## How it works
 
 - `muster watch` (the service) checks the spec roots every 5 s. When it finds the trigger, it sets Status to `In progress (muster)` and runs `muster start`.
-- Herder (`muster run`) is a small script in its own pane, not an AI agent. It starts each role with `hc run <template>`. The roles report with `hc send <herder>`, and the messages arrive on Herder's input.
-- Panes: each herd gets its own space (one tab, the 2×2 grid). Every terminal carries the `herdr.space` / `herdr.tab` labels. Herder writes the grid into herdr-core's `herdr-app` layout document, so the layout exists even with no window open, and remote herds appear in your Herdr app under that machine. Pressing Enter in Herder after sign-off removes the space.
+- Herder (`muster run`) is a small hidden script, not an AI agent. It starts each role with `hc run <template>`. The roles report with `hc send <herder>`, and the messages arrive on Herder's input. With `muster herd`, it also records the calling terminal (`$HC_TERMINAL_ID`) as the origin, moves that pane into the herd's space, and sends it the outcome.
+- Panes: each herd gets its own space (one tab, the 2×2 grid). Every terminal carries the `herdr.space` / `herdr.tab` labels. Herder writes the grid into herdr-core's `herdr-app` layout document, so the layout exists even with no window open, and remote herds appear in your Herdr app under that machine.
+- Spec link: Herder labels each herd terminal with `muster.specfile` and `muster.editor`, a JSON argv resolved on that machine. The `muster-pane` header shows the link and runs `pane.split {direction: "right", argv: [...editor, spec]}`.
 
 ## Limitations
 

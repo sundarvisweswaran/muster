@@ -11,6 +11,7 @@ A pane header that names each pane's role when it belongs to a Muster herd (plan
   - the program's 14px icon (dim);
   - the label: for a Muster terminal, its role (`Herder`, `Plotter`, `Tinker`, `Nitpick`), then ` · `, then the program name (`Plotter · omp`); if the role and program names match (the Herder script reports `herder`), just the role. For other panes, the shipped header's label: the agent's or shell's program name, else the terminal title, else `shell`. Medium weight, foreground color, truncated at 260px.
   - the pane's folder (dim, `~` for home, truncated, takes the remaining width);
+  - for a herd pane (and the agent that started the herd), a spec link: a 12px file icon and `<spec folder>/spec.md`, underlined in the theme's `accent`, 20px tall with 6px padding, truncated at 220px;
   - a status marker at the right end.
 
 ## How it behaves
@@ -32,7 +33,8 @@ A pane header that names each pane's role when it belongs to a Muster herd (plan
   - `terminals()` reads the terminal's labels.
   - `theme()`, `home()`, and `run()` for the pane commands.
 - **Role:** the `muster.role` label (`herder` | `plotter` | `tinker` | `nitpick`) on the core terminal, which Muster sets when it starts each agent. A remote pane's terminal is `machine/tN`. Match it either to a `terminals()` entry with that full address, or to one whose `address` is `tN` and whose `machine` is that machine.
-- **No programs, network or outside files.** The rest of Muster (the CLI, the watcher service and the agent templates) is in this repo but isn't part of the mod. See the README.
+- **Spec link:** the labels `muster.specfile` (absolute path) and `muster.editor` (a JSON argv such as `["nvim"]`, resolved by Muster on the terminal's machine). A click runs `pane.split {direction: "right", pane, argv: [...editor, specfile]}` and stops propagation, so the bar doesn't also focus. The split runs on the pane's machine, so a remote herd opens the spec there. If `muster.editor` is missing or invalid, use `["vi"]`. The icon is the shipped `mods/files/file.svg`.
+- **Programs:** the only program it starts is that editor, in a new terminal pane, when the link is clicked. No network, and no files read outside its folder. The rest of Muster (the CLI, the watcher service and the agent templates) is in this repo but isn't part of the mod. See the README.
 
 ## Watch out
 
@@ -44,6 +46,7 @@ A pane header that names each pane's role when it belongs to a Muster herd (plan
 ## Done when
 
 - `herdr-app check mods/muster-pane` passes, and `herdr-app status` shows no errors once it is set as the active layout's header.
-- In a running herd, the four headers read `Herder`, `Plotter · <agent>`, `Tinker · <agent>`, `Nitpick · <agent>`, including for a herd on another machine.
+- In a running herd, the role headers read `Plotter · <agent>`, `Tinker · <agent>`, `Nitpick · <agent>` (Herder itself runs hidden), including for a herd on another machine. The agent that started the herd keeps its normal label and also shows the spec link.
 - A pane that isn't part of a herd shows exactly what the shipped `pane` header shows.
 - The status markers and hover buttons behave as above.
+- In a herd pane, clicking the spec link opens a split to the right running the editor on the spec; clicking elsewhere on the bar only focuses the pane.

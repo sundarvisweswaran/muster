@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """muster: plan -> build -> verify for one spec, with a separate agent per role, on herdr.
 
+  muster herd <spec dir>          start a herd from an agent's terminal: that agent joins the herd's
+                                  space and gets the outcome as a message
+  muster start <spec dir>         start a herd now, with no origin agent
+  muster resume <spec dir>        resume an escalated herd
   muster install [--on MACHINE]   install/refresh on this machine (or an hc machine)
   muster doctor                   check this machine's setup
-  muster start <spec dir>         start a herd now
   muster watch                    daemon: start a herd for every spec whose Status is the trigger (Herd)
-  muster run <spec dir>           Herder itself (runs inside its own hc pane)
+  muster run <spec dir>           Herder itself (a hidden hc terminal)
 
 Config: ~/.config/muster/config.toml (agent command per role, spec roots, trigger word).
 Roles: Plotter plans, Tinker builds, Nitpick verifies; Herder (this script) drives the gates.
@@ -41,11 +44,12 @@ BLURB = {"plotter": "plans the spec into PLAN.md", "tinker": "builds the FINAL p
 # Agents known to report status to herdr (OSC 7501); others get `ready: quiet`.
 REPORTING = {"omp", "claude", "codex", "pi", "opencode", "amp", "droid", "gemini", "kimi", "qwen", "cursor-agent", "devin"}
 DOC = "herdr-app"
-GRID = [["herder", "plotter"], ["tinker", "nitpick"]]
+GRID = [["origin", "plotter"], ["tinker", "nitpick"]]  # origin: the agent that ran `muster herd`
 
 DEFAULT_CONFIG = """# Muster config. Each role runs an interactive agent command of your choice.
 spec_roots = ["~/code/specs"]   # each spec: <root>/<folder>/spec.md (or SPEC.md)
 trigger = "Herd"                # a spec's Status value that starts a herd
+# editor = "nvim"               # opens a spec from its pane header; default: $VISUAL/$EDITOR, else nvim/hx/vim/nano/vi
 
 [roles.plotter]
 command = "omp"
@@ -208,6 +212,16 @@ def live_terminals(**labels: str) -> list[dict]:
 
 # ---------- Herdr layout: the tab lives in herdr-core's `herdr-app` doc, so it works without a window ----------
 
+def _prune(node: dict | None, gone: set[str]) -> dict | None:
+    """Drop blocks showing any terminal in `gone`; containers left empty disappear."""
+    if not node:
+        return None
+    if node.get("type") == "block":
+        return None if (node.get("content") or {}).get("terminal") in gone else node
+    kids = [k for k in (_prune(c, gone) for c in node.get("children") or []) if k]
+    return {**node, "children": kids} if kids else None
+
+
 def _blocks(node: dict | None, acc: dict[str, str]) -> dict[str, str]:
     if node:
         if node.get("type") == "block" and (node.get("content") or {}).get("terminal"):
@@ -219,7 +233,8 @@ def _blocks(node: dict | None, acc: dict[str, str]) -> dict[str, str]:
 
 def write_layout(d: Path, folder: str, members: dict[str, str] | None) -> None:
     """Give the herd its own space (named after the spec folder) with one tab holding a grid of
-    members (role -> address); members=None removes the space."""
+    members (slot -> address). A member shown in another tab (the origin agent's pane) moves here;
+    a tab or space that move leaves empty closes. members=None removes the herd's space."""
     sid, tid = space_id(d), tab_id(d)
     for _ in range(10):
         got = rpc("doc.get", {"name": DOC})["result"]
@@ -231,6 +246,17 @@ def write_layout(d: Path, folder: str, members: dict[str, str] | None) -> None:
                 return
             spaces.remove(space)
         else:
+            moving = set(members.values())
+            for other in list(spaces):
+                if other is space:
+                    continue
+                for t in list(other.get("tabs", [])):
+                    if moving & set(_blocks(t.get("root"), {})):
+                        t["root"] = _prune(t.get("root"), moving)
+                        if not t["root"]:
+                            other["tabs"].remove(t)
+                if not other.get("tabs"):
+                    spaces.remove(other)
             if not space:
                 space = {"id": sid, "name": d.name, "folder": folder, "tabs": []}
                 spaces.append(space)
@@ -254,11 +280,35 @@ def write_layout(d: Path, folder: str, members: dict[str, str] | None) -> None:
     raise RuntimeError("could not write the Herdr layout (doc kept changing)")
 
 
-def labels(d: Path, role: str) -> list[str]:
+def editor_argv() -> list[str]:
+    """The editor that opens a spec from its pane header: config `editor`, else a real $VISUAL/$EDITOR,
+    else the first terminal editor installed."""
+    for cmd in (config().get("editor"), os.environ.get("VISUAL"), os.environ.get("EDITOR")):
+        if cmd and agent_name(cmd) not in ("true", "false", ":") and shutil.which(agent_name(cmd)):
+            return shlex.split(cmd)
+    return [next((e for e in ("nvim", "hx", "vim", "nano", "vi") if shutil.which(e)), "vi")]
+
+
+def spec_labels(d: Path) -> list[str]:
+    """Labels that give a pane header its spec link (muster-pane mod)."""
+    sf = spec_file(d)
+    out = [f"muster.spec={d}"]
+    return out + [f"muster.specfile={sf}", f"muster.editor={json.dumps(editor_argv())}"] if sf else out
+
+
+def labels(d: Path, role: str, shown: bool = True) -> list[str]:
+    """hc --label args. shown=False leaves out herdr.space/herdr.tab so Herdr keeps it off screen."""
+    kvs = [*spec_labels(d), f"muster.role={role}"]
+    if shown:
+        kvs = [f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d)}", *kvs]
     out: list[str] = []
-    for kv in (f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d)}", f"muster.spec={d}", f"muster.role={role}"):
+    for kv in kvs:
         out += ["--label", kv]
     return out
+
+
+def core_id() -> str:
+    return (hc("server", "status").get("core") or {}).get("id", "")
 
 
 # ---------- start / watch ----------
@@ -271,8 +321,25 @@ def start(d: Path) -> str:
         return "already running"
     me = shutil.which("muster") or str(Path(__file__).resolve())
     out = hc("run", "--bg", "--no-parent", "--name", f"{herd_id(d)}-herder", "--cwd", str(d),
-             *labels(d, "herder"), "--", sys.executable, me, "run", str(d))
+             *labels(d, "herder", shown=False), "--", sys.executable, me, "run", str(d))
     return out.get("address", "?")
+
+
+def herd(d: Path) -> str:
+    """Start a herd now, from an agent's terminal: that terminal becomes the herd's origin. Its pane
+    moves into the herd's space and it gets the outcome as a message."""
+    d = d.expanduser().resolve()
+    sf = spec_file(d)
+    if not sf:
+        raise RuntimeError(f"no spec.md or SPEC.md in {d}")
+    origin = d / ".muster-origin.json"
+    me = os.environ.get("HC_TERMINAL_ID")
+    if me:
+        origin.write_text(json.dumps({"terminal": me, "core": core_id()}) + "\n")
+    elif origin.exists():
+        origin.unlink()
+    set_status(sf, "In progress (muster)")
+    return start(d)
 
 
 def watch(interval: float = 5.0) -> None:
@@ -303,25 +370,44 @@ def watch(interval: float = 5.0) -> None:
 # ---------- Herder ----------
 
 class Herder:
+    """Drives one herd. Runs hidden (no pane); its pane slot goes to the origin agent, if any."""
+
     def __init__(self, d: Path):
         self.d = d.resolve()
         self.sf = spec_file(self.d)
         self.id = herd_id(self.d)
         self.me = os.environ.get("HC_TERMINAL_ID", "")
-        self.members: dict[str, str] = {"herder": self.me}
         self.repos = resolve_repos(self.sf.read_text(), self.d.parent.parent) if self.sf else []
         self.cwd = self.repos[0] if self.repos else self.d.parent.parent
         self.log_path = self.d / "muster.log"
+        self.members: dict[str, str] = {}
+        self.origin = self.find_origin()
+        if self.origin:
+            self.members["origin"] = self.origin
 
-    def osc(self, state: str) -> None:
-        sys.stdout.write(f"\x1b]7501;state={state}:app=herder\x1b\\")
-        sys.stdout.flush()
+    def find_origin(self) -> str | None:
+        p = self.d / ".muster-origin.json"
+        try:
+            o = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        term = o.get("terminal")
+        if not term or o.get("core") != core_id():  # a terminal on another machine can't join this space
+            return None
+        live = hc("get", term, check=False)
+        return term if live.get("state") == "live" else None
 
     def log(self, msg: str) -> None:
         line = f"{time.strftime('%H:%M:%S')}  {msg}"
         print(line, flush=True)
         with self.log_path.open("a") as f:
             f.write(line + "\n")
+
+    def tell_origin(self, text: str) -> None:
+        if not self.origin:
+            return
+        r = subprocess.run(["hc", "send", self.origin, text], capture_output=True, text=True)
+        self.log(f"-> origin {self.origin}: {text[:200]}" + (f"  !! {r.stderr.strip()}" if r.returncode else ""))
 
     def layout(self, remove: bool = False) -> None:
         try:
@@ -338,7 +424,7 @@ class Herder:
         addr = out.get("address")
         if not addr:
             self.log(f"!! could not start {TITLES[role]}: {out}")
-            self.osc("blocked")
+            self.tell_origin(f"Muster: {self.d.name} is stuck: {TITLES[role]} could not start. See {self.log_path}.")
             return
         self.members[role] = addr
         sent = (out.get("first_message") or {}).get("sent")
@@ -354,21 +440,26 @@ class Herder:
         if self.sf:
             set_status(self.sf, value)
 
+    def stop_peers(self) -> None:
+        for role in ("nitpick", "tinker", "plotter"):
+            if role in self.members:
+                subprocess.run(["hc", "kill", self.name(role)], capture_output=True)
+                subprocess.run(["hc", "rm", self.name(role)], capture_output=True)
+                del self.members[role]
+
+    def close(self) -> None:
+        """Leave the origin agent alone in the herd's space, or remove the space if there is none."""
+        self.stop_peers()
+        self.layout(remove=not self.origin)
+
     def run(self) -> None:
-        sys.stdout.write(f"\x1b]0;Herder · {self.d.name}\x07")
-        self.osc("working")
-        try:
-            import termios
-            attrs = termios.tcgetattr(0)
-            attrs[3] &= ~termios.ECHO  # relayed messages are logged, not echoed
-            termios.tcsetattr(0, termios.TCSANOW, attrs)
-        except Exception:  # noqa: BLE001 - not a tty: fine
-            pass
         repos = ", ".join(map(str, self.repos)) or "not resolved from the spec's Repos row; find the checkouts (usually under ~/code)"
         common = f"Spec dir: {self.d}. Herder: {self.me}. Repos: {repos}."
         self.log(f"herd {self.id}: spec {self.sf}")
-        self.log(f"repos: {repos}")
-        self.layout()
+        self.log(f"repos: {repos}; origin: {self.origin or 'none'}")
+        if self.origin:
+            subprocess.run(["hc", "label", self.origin, f"herdr.space={space_id(self.d)}", f"herdr.tab={tab_id(self.d)}",
+                            *spec_labels(self.d)], capture_output=True)
         self.launch("plotter", f"{common} Tinker will be {self.name('tinker')}.")
         escalated = False
         for raw in sys.stdin:
@@ -376,7 +467,7 @@ class Herder:
             if not line:
                 if escalated:
                     escalated = False
-                    self.osc("working")
+                    self.set_spec_status("In progress (muster)")
                     self.log("resumed")
                 continue
             self.log(f"<- {line[:300]}")
@@ -392,40 +483,38 @@ class Herder:
                 if verdict != "Verdict: SIGNED-OFF":
                     self.log(f"!! SIGNED_OFF but VERDICT.md says {verdict!r}; waiting")
                     continue
-                self.finish()
+                self.set_spec_status("Implemented (muster signed off; see VERDICT.md)")
+                self.log("SIGNED OFF")
+                self.close()
+                self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF. Verdict: {self.d}/VERDICT.md; plan: {self.d}/PLAN.md; "
+                                 f"build notes: {self.d}/IMPL.md. The spec's Status is now Implemented.")
                 return
             elif "ESCALATE" in line:
                 escalated = True
                 self.set_spec_status("In progress (muster escalated; see VERDICT.md)")
-                self.osc("blocked")
-                self.log("ESCALATED: Nitpick gave up after 3 rounds. Agents stay up; press Enter here once resolved.")
-
-    def finish(self) -> None:
-        self.set_spec_status("Implemented (muster signed off; see VERDICT.md)")
-        for role in ("nitpick", "tinker", "plotter"):
-            if role in self.members:
-                subprocess.run(["hc", "kill", self.name(role)], capture_output=True)
-                subprocess.run(["hc", "rm", self.name(role)], capture_output=True)
-                del self.members[role]
-        self.layout()
-        self.osc("done")
-        self.log(f"SIGNED OFF. Artifacts: {self.d}/{{PLAN,IMPL,VERDICT}}.md")
-        print("\nPress Enter to close this herd.", flush=True)
-        sys.stdin.readline()
-        self.layout(remove=True)
+                self.log("ESCALATED")
+                self.tell_origin(f"Muster: {self.d.name} ESCALATED: Nitpick still rejects after 3 rounds, see {self.d}/VERDICT.md. "
+                                 f"Plotter, Tinker and Nitpick stay up in this space. Once it's sorted: muster resume {self.d}")
 
 
 def run(d: Path) -> None:
     herder = Herder(d)
     try:
         herder.run()
-    except Exception as e:  # noqa: BLE001 - surface any crash in the spec and keep the pane open
+    except Exception as e:  # noqa: BLE001 - surface any crash in the spec and to the origin agent
         herder.set_spec_status(f"Muster failed: {str(e)[:120]}")
-        herder.osc("blocked")
         herder.log(f"!! Herder crashed: {e!r}")
-        print("\nPress Enter to close.", flush=True)
-        sys.stdin.readline()
-        herder.layout(remove=True)
+        herder.close()
+        herder.tell_origin(f"Muster: {herder.d.name} FAILED: {e}. See {herder.log_path}.")
+
+
+def resume(d: Path) -> str:
+    d = d.expanduser().resolve()
+    t = live_terminals(**{"muster.spec": str(d), "muster.role": "herder"})
+    if not t:
+        raise RuntimeError(f"no running herd for {d}")
+    hc("keys", t[0]["address"], "enter")
+    return "resumed"
 
 
 # ---------- install / doctor ----------
@@ -557,8 +646,12 @@ def main() -> None:
         install_remote(a[a.index("--on") + 1]) if "--on" in a else install_local()
     elif cmd == "doctor":
         doctor()
+    elif cmd == "herd" and len(a) == 2:
+        print(herd(Path(a[1])))
     elif cmd == "start" and len(a) == 2:
         print(start(Path(a[1])))
+    elif cmd == "resume" and len(a) == 2:
+        print(resume(Path(a[1])))
     elif cmd == "watch":
         watch()
     elif cmd == "run" and len(a) == 2:

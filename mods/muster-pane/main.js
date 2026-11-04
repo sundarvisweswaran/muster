@@ -12,13 +12,23 @@ import { panes, props, run, theme, home, terminals } from "herdr";
 
 const ROLES = { herder: "Herder", plotter: "Plotter", tinker: "Tinker", nitpick: "Nitpick" };
 
-function roleOf(address) {
+function terminalOf(address) {
   if (!address) return null;
   const local = address.includes("/") ? address.slice(address.indexOf("/") + 1) : address;
   const machine = address.includes("/") ? address.slice(0, address.indexOf("/")) : null;
-  const term = terminals().find((x) => x.address === address
-    || (x.address === local && (x.machine ?? null) === machine));
-  return ROLES[term?.labels?.["muster.role"]] ?? null;
+  return terminals().find((x) => x.address === address
+    || (x.address === local && (x.machine ?? null) === machine)) ?? null;
+}
+
+// The spec link: Herder labels each herd terminal (and the origin agent) with the spec file and the
+// editor command (a JSON argv) resolved on that terminal's machine.
+function specOf(term) {
+  const file = term?.labels?.["muster.specfile"];
+  if (!file) return null;
+  let editor;
+  try { editor = JSON.parse(term.labels["muster.editor"] ?? "[]"); } catch { editor = []; }
+  const parts = file.split("/");
+  return { file, label: parts.slice(-2).join("/"), argv: [...(editor.length ? editor : ["vi"]), file] };
 }
 
 function icon(p, size, color) {
@@ -58,8 +68,10 @@ export default class Pane extends View {
     const p = this.me();
     if (!p) return div();
     const program = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
-    const role = roleOf(p.terminal);
+    const term = terminalOf(p.terminal);
+    const role = ROLES[term?.labels?.["muster.role"]] ?? null;
     const name = role && role.toLowerCase() !== program ? `${role} · ${program}` : role ?? program;
+    const spec = specOf(term);
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
     const pane = p.pane;
@@ -78,6 +90,22 @@ export default class Pane extends View {
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
       .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
+      .when(Boolean(spec), el => el.child(h_flex()
+        .id(`ph-spec-${pane}`)
+        .flex_none()
+        .gap(4)
+        .px(6)
+        .h(20)
+        .items_center()
+        .rounded(4)
+        .text_color(t.accent)
+        .hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          run("pane.split", { direction: "right", pane, argv: spec.argv });
+        })
+        .child(svg("mods/files/file.svg").size(12).flex_none())
+        .child(div().max_w(220).truncate().underline().child(spec.label))))
       .when(st === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child("Needs you")))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))
