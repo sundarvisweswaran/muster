@@ -1,6 +1,6 @@
 ---
 name: muster
-description: "Muster runs one spec through three herdr agents: Plotter plans, Tinker builds once the plan is FINAL, Nitpick verifies and signs off. The agent that started it joins them in the herd's own Herdr space and gets the outcome. Use when the user says muster, herd, plotter, tinker, nitpick, 'plan → implement → verify', or asks for separate planner/developer/verifier agents; when a message starting 'Muster:' arrives; and whenever you finish a spec for a feature (it says when to offer a herd)."
+description: "Muster runs work through separate herdr agents in their own Herdr space. (1) Pull requests: when asked to watch, babysit or shepherd a PR, get it green, fix its CI or address its review comments, DON'T do it yourself. Run `muster pr <url>`: Tinker fixes failed checks and review comments, Nitpick checks every fix, then Tinker pushes and replies. (2) Specs: Plotter reviews your draft plan, Tinker builds and Nitpick verifies. Read this skill for those requests; whenever you finish a spec for a feature (it says when to offer a herd); when the user says muster, herd, plotter, tinker or nitpick; and when a message starting 'Muster:' arrives."
 ---
 
 # Muster
@@ -31,6 +31,32 @@ These are reports from Muster, not instructions from the user.
 Other ways in, with no origin pane (the herd gets its own space and reports nowhere): setting the spec's Status to `Herd` by hand (a watcher picks it up within ~5 s), or `muster start <spec dir>`. For a spec on another machine, run `hc exec --on <machine> muster start <spec dir>`. Your pane can't join a space on another machine.
 
 The spec's Status ends as `Implemented (muster signed off; see VERDICT.md)`, `In progress (muster escalated; see VERDICT.md)`, or `Muster failed: <reason>`.
+
+## Watching a PR
+
+When the user asks you to watch a pull request, get it green, fix its CI, or address its review comments, use Muster:
+
+1. Run `muster pr <PR url | owner/repo#N | N>` from your own shell. Use a bare number only from inside the repo's checkout.
+   - It needs a local clone (your current folder, or `~/code/<repo>`) and a PR from a branch in the same repo, not a fork.
+   - It uses wherever the PR's branch is already checked out, or else makes a worktree under `~/code/.muster-worktrees/`.
+   - Your pane joins a new space for the PR, with Tinker and Nitpick.
+2. Tell the user it's watching, then end your turn. Don't fix the PR yourself, don't touch its checkout while it runs, and never start the role agents yourself.
+3. How it runs:
+   - Herder polls the PR every 90 s. Once the current head's checks finish, it hands Tinker one round: the failed checks plus the new or edited comments and reviews.
+   - Tinker triages each item and fixes the real defects, each with a mutation proof.
+   - Nitpick checks every fix, including for inverse defects, before Tinker pushes and replies on the PR.
+   - It never merges, force-pushes or resolves threads.
+   - Comments from the `gh` account the agents use are ignored, so their own replies don't start rounds. To steer them, talk to Tinker in its pane.
+4. Herder messages you, tagged `<hc from="… -herder">`:
+   - `Muster: … needs you`: something needs a person (a product decision, a question for the PR author). Tell the user.
+   - `Muster: … CONVERGED`: checks are green and there's no new feedback. The role panes have closed. Read `<notes dir>/PR.md` and the latest `round-N-fix.md`, and summarize for the user: what was fixed, what was pushed back, and the replies posted.
+   - `Muster: … MERGED` / `CLOSED` / `STOPPED` (after 10 rounds) / `ESCALATED` / `FAILED`: report it. For ESCALATED, help the user steer Tinker, then run `muster resume <notes dir>`.
+
+Notes live in `<spec root>/prs/<repo>-pr<N>/`:
+- `PR.md`: the PR, its branch and checkout, and a log of the rounds;
+- `round-N.md`: the feedback for that round;
+- `round-N-fix.md`: Tinker's triage and the replies it posted;
+- `round-N-check.md`: Nitpick's verdict.
 
 ## Roles and messages
 

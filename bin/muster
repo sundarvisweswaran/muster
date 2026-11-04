@@ -4,11 +4,15 @@
   muster herd <spec dir>          start a herd from an agent's terminal: that agent joins the herd's
                                   space and gets the outcome as a message
   muster start <spec dir>         start a herd now, with no origin agent
-  muster resume <spec dir>        resume an escalated herd
+  muster pr <url | owner/repo#N | N>
+                                  watch a pull request: Tinker fixes failed checks and addresses review
+                                  comments, Nitpick checks each fix, then Tinker pushes and replies;
+                                  the calling agent joins the PR's space and gets the outcome
+  muster resume <dir>             resume an escalated herd or PR watch
   muster install [--on MACHINE]   install/refresh on this machine (or an hc machine)
   muster doctor                   check this machine's setup
   muster watch                    daemon: start a herd for every spec whose Status is the trigger (Herd)
-  muster run <spec dir>           Herder itself (a hidden hc terminal)
+  muster run <spec dir>           Herder itself (a hidden hc terminal); run-pr <dir> for a PR watch
 
 Config: ~/.config/muster/config.toml (agent command per role, spec roots, trigger word).
 Roles: Plotter plans, Tinker builds, Nitpick verifies; Herder (this script) drives the gates.
@@ -141,7 +145,7 @@ def spec_roots(cfg: dict) -> list[Path]:
 
 
 def spec_file(d: Path) -> Path | None:
-    for name in ("spec.md", "SPEC.md"):
+    for name in ("spec.md", "SPEC.md", "PR.md"):
         if (d / name).is_file():
             return d / name
     return None
@@ -241,7 +245,7 @@ def _blocks(node: dict | None, acc: dict[str, str]) -> dict[str, str]:
     return acc
 
 
-def write_layout(d: Path, folder: str, members: dict[str, str] | None) -> None:
+def write_layout(d: Path, folder: str, members: dict[str, str] | None, grid: list[list[str]] = GRID) -> None:
     """Give the herd its own space (named after the spec folder) with one tab holding a grid of
     members (slot -> address). A member shown in another tab (the origin agent's pane) moves here;
     a tab or space that move leaves empty closes. members=None removes the herd's space."""
@@ -276,7 +280,7 @@ def write_layout(d: Path, folder: str, members: dict[str, str] | None) -> None:
                 space.setdefault("tabs", []).append(tab)
             panes = _blocks(tab.get("root"), {})
             rows = []
-            for i, row in enumerate(GRID):
+            for i, row in enumerate(grid):
                 cells = [r for r in row if r in members]
                 if cells:
                     rows.append({"type": "row", "id": f"{tid}r{i}", "size": {"weight": 1.0}, "children": [
@@ -382,6 +386,9 @@ def watch(interval: float = 5.0) -> None:
 class Herder:
     """Drives one herd. Runs hidden (no pane); its pane slot goes to the origin agent, if any."""
 
+    GRID = GRID
+    TEMPLATE = "muster-{role}"
+
     def __init__(self, d: Path):
         self.d = d.resolve()
         self.sf = spec_file(self.d)
@@ -421,7 +428,7 @@ class Herder:
 
     def layout(self, remove: bool = False) -> None:
         try:
-            write_layout(self.d, str(self.cwd), None if remove else self.members)
+            write_layout(self.d, str(self.cwd), None if remove else self.members, self.GRID)
         except Exception as e:  # noqa: BLE001 - layout is cosmetic; never stop the pipeline for it
             self.log(f"layout: {e}")
 
@@ -430,7 +437,7 @@ class Herder:
 
     def launch(self, role: str, task: str) -> None:
         out = hc("run", "--bg", "--name", self.name(role), "--cwd", str(self.cwd), *labels(self.d, role),
-                 f"muster-{role}", task, check=False)
+                 self.TEMPLATE.format(role=role), task, check=False)
         addr = out.get("address")
         if not addr:
             self.log(f"!! could not start {TITLES[role]}: {out}")
@@ -530,19 +537,309 @@ def resume(d: Path) -> str:
     return "resumed"
 
 
+# ---------- PR mode: watch a pull request, fix failures, address review comments ----------
+
+PR_GRID = [["origin", "tinker"], ["nitpick"]]
+FAILED = {"failure", "timed_out", "startup_failure", "action_required", "error"}
+PENDING = {"queued", "in_progress", "waiting", "pending", "requested"}
+
+
+def gh(*args: str) -> object:
+    p = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(args[:3])} failed: {p.stderr.strip()[:300]}")
+    return json.loads(p.stdout) if p.stdout.strip() else None
+
+
+def git(cwd: Path, *args: str) -> str:
+    p = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args[:2])} failed in {cwd}: {p.stderr.strip()[:300]}")
+    return p.stdout.strip()
+
+
+def parse_pr(ref: str, cwd: Path) -> tuple[str, int]:
+    """`https://github.com/o/r/pull/12`, `o/r#12`, or `12` (repo from the current checkout)."""
+    m = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", ref) or re.fullmatch(r"([\w.-]+/[\w.-]+)#(\d+)", ref)
+    if m:
+        return m.group(1), int(m.group(2))
+    if ref.isdigit():
+        repo = subprocess.run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+                              cwd=cwd, capture_output=True, text=True).stdout.strip()
+        if repo:
+            return repo, int(ref)
+    raise RuntimeError(f"can't read PR {ref!r}: use its URL, owner/repo#N, or a number inside the repo's checkout")
+
+
+def pr_checkout(repo: str, number: int, branch: str, code_root: Path) -> Path:
+    """A checkout of the PR's branch: wherever it's already checked out, else a new worktree."""
+    name = repo.split("/")[1]
+    clones = [p for p in (Path.cwd(), code_root / name) if (p / ".git").exists()]
+    clone = next((p for p in clones if repo.lower() in git(p, "remote", "get-url", "origin").lower()), None)
+    if not clone:
+        raise RuntimeError(f"no local clone of {repo} (looked in {', '.join(map(str, [Path.cwd(), code_root / name]))})")
+    current = None
+    for block in git(clone, "worktree", "list", "--porcelain").split("\n\n"):
+        if f"branch refs/heads/{branch}" in block.splitlines():
+            current = Path(block.splitlines()[0].split(" ", 1)[1])
+    if current:
+        return current
+    git(clone, "fetch", "origin", branch)
+    wt = code_root / ".muster-worktrees" / f"{name}-pr{number}"
+    has_local = subprocess.run(["git", "-C", str(clone), "rev-parse", "--verify", "-q", f"refs/heads/{branch}"],
+                               capture_output=True).returncode == 0
+    if has_local:
+        git(clone, "worktree", "add", str(wt), branch)
+    else:
+        git(clone, "worktree", "add", "--track", "-b", branch, str(wt), f"origin/{branch}")
+    return wt
+
+
+def pr_start(ref: str) -> str:
+    """`muster pr <ref>` from an agent's terminal: that agent joins the PR's space and gets the outcome."""
+    root = spec_roots(config())[0]
+    repo, number = parse_pr(ref, Path.cwd())
+    info = gh("pr", "view", str(number), "-R", repo, "--json", "number,title,url,headRefName,baseRefName,isCrossRepository,state")
+    if info["state"] != "OPEN":
+        raise RuntimeError(f"{info['url']} is {info['state'].lower()}")
+    if info["isCrossRepository"]:
+        raise RuntimeError(f"{info['url']} comes from a fork; Muster can only push to branches in {repo}")
+    checkout = pr_checkout(repo, number, info["headRefName"], root.parent)
+    d = (root / "prs" / f"{repo.split('/')[1]}-pr{number}").resolve()
+    d.mkdir(parents=True, exist_ok=True)
+    meta = {"repo": repo, "number": number, "url": info["url"], "title": info["title"],
+            "branch": info["headRefName"], "base": info["baseRefName"], "checkout": str(checkout)}
+    (d / ".muster-pr.json").write_text(json.dumps(meta, indent=2) + "\n")
+    if not (d / "PR.md").exists():
+        (d / "PR.md").write_text(f"# {info['title']}\n\n| | |\n|---|---|\n| **PR** | {info['url']} |\n"
+                                 f"| **Branch** | {info['headRefName']} → {info['baseRefName']} |\n"
+                                 f"| **Checkout** | {checkout} |\n| **Status** | Watching (muster) |\n\n## Rounds\n")
+    me = os.environ.get("HC_TERMINAL_ID")
+    origin = d / ".muster-origin.json"
+    if me:
+        origin.write_text(json.dumps({"terminal": me, "core": core_id()}) + "\n")
+    elif origin.exists():
+        origin.unlink()
+    if live_terminals(**{"muster.spec": str(d), "muster.role": "herder"}):
+        return "already watching"
+    prog = shutil.which("muster") or str(Path(__file__).resolve())
+    out = hc("run", "--bg", "--no-parent", "--name", f"{herd_id(d)}-herder", "--cwd", str(d),
+             *labels(d, "herder", shown=False), "--", sys.executable, prog, "run-pr", str(d))
+    return f"watching {info['url']} ({out.get('address', '?')}); checkout {checkout}; notes {d}"
+
+
+class PrHerder(Herder):
+    """Watches one PR. Each round hands new feedback (failed checks, new or edited comments and reviews)
+    to Tinker; Nitpick checks every fix before Tinker pushes and replies. Stops when green and quiet."""
+
+    GRID = PR_GRID
+    TEMPLATE = "muster-pr-{role}"
+
+    def __init__(self, d: Path):
+        super().__init__(d)
+        self.meta = json.loads((self.d / ".muster-pr.json").read_text())
+        self.repo, self.number = self.meta["repo"], self.meta["number"]
+        self.cwd = Path(self.meta["checkout"])
+        self.state_path = self.d / ".muster-pr-state.json"
+        st = json.loads(self.state_path.read_text()) if self.state_path.is_file() else {}
+        self.handled: set[str] = set(st.get("handled", []))
+        self.round: int = st.get("round", 0)
+        self.in_round = False
+        self.round_items: list[str] = []
+        self.needs_you: list[str] = st.get("needs_you", [])
+        cfg = config()
+        self.poll = float(cfg.get("pr_poll", 90))
+        self.max_rounds = int(cfg.get("pr_max_rounds", 10))
+        self.me_login = (gh("api", "user") or {}).get("login", "")
+        self.pending_since: float | None = None
+        self.quiet_until = 0.0  # after a push, don't call it converged before the new head's checks register
+
+    def save(self) -> None:
+        self.state_path.write_text(json.dumps({"handled": sorted(self.handled), "round": self.round,
+                                               "needs_you": self.needs_you}, indent=1) + "\n")
+
+    def api(self, path: str) -> list | dict:
+        return gh("api", f"repos/{self.repo}/{path}") or []
+
+    def feedback(self, sha: str) -> tuple[list[tuple[str, str]], bool]:
+        """New items as (key, markdown), and whether any check on the head is still running."""
+        items: list[tuple[str, str]] = []
+        for c in self.api(f"issues/{self.number}/comments?per_page=100"):
+            if c["user"]["login"] != self.me_login:
+                items.append((f"issue-comment:{c['id']}@{c['updated_at']}",
+                              f"### Comment by {c['user']['login']} ({c['html_url']}, updated {c['updated_at']})\n\n{c['body']}"))
+        for c in self.api(f"pulls/{self.number}/comments?per_page=100"):
+            if c["user"]["login"] != self.me_login:
+                where = f"{c.get('path')}:{c.get('line') or c.get('original_line') or '?'}"
+                items.append((f"review-comment:{c['id']}@{c['updated_at']}",
+                              f"### Inline comment by {c['user']['login']} on {where} (id {c['id']}, {c['html_url']})\n\n{c['body']}"))
+        for r in self.api(f"pulls/{self.number}/reviews?per_page=100"):
+            if r["user"]["login"] != self.me_login and (r.get("body") or r["state"] == "CHANGES_REQUESTED"):
+                items.append((f"review:{r['id']}@{r.get('submitted_at')}",
+                              f"### Review by {r['user']['login']}: {r['state']} ({r['html_url']})\n\n{r.get('body') or ''}"))
+        running = False
+        for c in self.api(f"commits/{sha}/check-runs?per_page=100").get("check_runs", []):
+            if c["status"] in PENDING:
+                running = True
+            elif (c.get("conclusion") or "") in FAILED:
+                notes = ""
+                try:
+                    ann = self.api(f"check-runs/{c['id']}/annotations")
+                    notes = "\n".join(f"- {a.get('annotation_level')}: {a.get('title') or ''} {a.get('message', '')[:400]}" for a in ann[:20])
+                except RuntimeError:
+                    pass
+                items.append((f"check:{sha}:{c['name']}",
+                              f"### Check failed: {c['name']} ({c['conclusion']}, {c.get('html_url')})\n\n{notes or '(no annotations)'}"))
+        for s in self.api(f"commits/{sha}/status").get("statuses", []):
+            if s["state"] == "pending":
+                running = True
+            elif s["state"] in FAILED:
+                items.append((f"status:{sha}:{s['context']}",
+                              f"### Status failed: {s['context']} ({s['state']}, {s.get('target_url')})\n\n{s.get('description') or ''}"))
+        return [(k, md) for k, md in items if k not in self.handled], running
+
+    def note(self, text: str) -> None:
+        with (self.d / "PR.md").open("a") as f:
+            f.write(f"- {time.strftime('%Y-%m-%d %H:%M')} {text}\n")
+
+    def start_round(self, sha: str, items: list[tuple[str, str]]) -> None:
+        self.round += 1
+        self.in_round = True
+        self.round_items = [k for k, _ in items]
+        path = self.d / f"round-{self.round}.md"
+        path.write_text(f"# Round {self.round}: {self.meta['url']}\n\nHead: `{sha}` on `{self.meta['branch']}`; checkout `{self.cwd}`.\n\n"
+                        + "\n\n".join(md for _, md in items) + "\n")
+        self.log(f"round {self.round}: {len(items)} item(s) -> Tinker")
+        self.note(f"round {self.round}: {len(items)} item(s), see round-{self.round}.md")
+        subprocess.run(["hc", "send", self.name("tinker"), f"ROUND {self.round}: {path}"], capture_output=True)
+        self.save()
+
+    def end_round(self, how: str) -> None:
+        self.handled.update(self.round_items)
+        self.in_round = False
+        self.round_items = []
+        self.note(f"round {self.round}: {how}")
+        self.save()
+
+    def finish(self, outcome: str) -> None:
+        set_status(self.d / "PR.md", f"{outcome} (muster)")
+        self.note(outcome)
+        self.log(outcome)
+        self.close()
+        extra = f" Needs you: {'; '.join(self.needs_you)}." if self.needs_you else ""
+        self.tell_origin(f"Muster: {self.meta['url']} {outcome} after {self.round} round(s). Rounds and replies: {self.d}/PR.md.{extra}")
+
+    def poll_once(self) -> bool:
+        """Returns True when the watch is over."""
+        pr = gh("pr", "view", str(self.number), "-R", self.repo, "--json", "state,headRefOid")
+        if pr["state"] != "OPEN":
+            self.finish(pr["state"].upper())
+            return True
+        if self.in_round:
+            return False
+        items, running = self.feedback(pr["headRefOid"])
+        if running:  # wait for checks (and review bots, which run as checks) on the current head
+            self.pending_since = self.pending_since or time.time()
+            if time.time() - self.pending_since < 30 * 60:
+                return False
+        self.pending_since = None
+        if items:
+            if self.round >= self.max_rounds:
+                self.tell_origin(f"Muster: {self.meta['url']} hit {self.max_rounds} rounds with feedback still coming; stopping here. See {self.d}/PR.md.")
+                self.finish("STOPPED")
+                return True
+            self.start_round(pr["headRefOid"], items)
+            return False
+        if time.time() < self.quiet_until:
+            return False
+        self.finish("CONVERGED: green, no new feedback")
+        return True
+
+    def handle(self, line: str) -> None:
+        if not line:
+            if self.paused:
+                self.paused = False
+                self.log("resumed")
+            return
+        self.log(f"<- {line[:300]}")
+        m = re.search(r"(PUSHED|NO_CHANGE|NEEDS_YOU|ESCALATE)\b[^:]*:?\s*(.*)", line)
+        if not m:
+            return
+        kind, rest = m.group(1), m.group(2).replace("</hc>", "").strip()
+        if kind == "NEEDS_YOU":
+            self.needs_you.append(rest[:200])
+            self.save()
+            self.tell_origin(f"Muster: {self.meta['url']} round {self.round} needs you: {rest[:300]}")
+        elif kind == "ESCALATE":
+            self.paused = True
+            self.tell_origin(f"Muster: {self.meta['url']} round {self.round} ESCALATED: Nitpick keeps rejecting Tinker's fix ({rest[:200]}). "
+                             f"Tinker and Nitpick stay up in this space. Once it's sorted: muster resume {self.d}")
+        elif self.in_round:
+            if kind == "PUSHED":
+                self.quiet_until = time.time() + 180
+            self.end_round(f"pushed {rest[:60]}" if kind == "PUSHED" else "no code change")
+            self.next_poll = time.time() + 30
+
+    def run(self) -> None:
+        import select
+        self.log(f"watching {self.meta['url']} as {self.me_login or '?'}; checkout {self.cwd}; origin {self.origin or 'none'}")
+        if self.origin:
+            subprocess.run(["hc", "label", self.origin, f"herdr.space={space_id(self.d)}", f"herdr.tab={tab_id(self.d)}",
+                            *spec_labels(self.d)], capture_output=True)
+        common = (f"PR: {self.meta['url']} ({self.repo}#{self.number}), branch {self.meta['branch']} → {self.meta['base']}. "
+                  f"Checkout: {self.cwd}. Notes dir D: {self.d}. Herder: {self.me}.")
+        self.launch("tinker", f"{common} Nitpick: {self.name('nitpick')}. Wait for a ROUND message.")
+        self.launch("nitpick", f"{common} Tinker: {self.name('tinker')}. Wait for a CHECK message from Tinker.")
+        self.paused = False
+        self.next_poll = time.time() + 20  # let both agents boot
+        buf = b""
+        while True:
+            ready, _, _ = select.select([0], [], [], max(1.0, self.next_poll - time.time()))
+            if ready:
+                chunk = os.read(0, 65536)
+                if not chunk:
+                    return
+                buf += chunk.replace(b"\r", b"\n")
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    self.handle(raw.decode(errors="replace").strip())
+                continue
+            if self.paused:
+                self.next_poll = time.time() + self.poll
+                continue
+            try:
+                if self.poll_once():
+                    return
+            except RuntimeError as e:  # a GitHub hiccup: log it and try again next poll
+                self.log(f"poll: {e}")
+            self.next_poll = time.time() + self.poll
+
+
+def run_pr(d: Path) -> None:
+    herder = PrHerder(d)
+    try:
+        herder.run()
+    except Exception as e:  # noqa: BLE001 - surface any crash to the origin agent
+        herder.log(f"!! PR herder crashed: {e!r}")
+        herder.close()
+        herder.tell_origin(f"Muster: {herder.meta.get('url', d.name)} watch FAILED: {e}. See {herder.log_path}.")
+
+
 # ---------- install / doctor ----------
 
 def write_templates(cfg: dict) -> None:
     TEMPLATES.mkdir(parents=True, exist_ok=True)
-    for role in ROLES:
+    # Spec herds: muster-<role>. PR watches: muster-pr-<role>, same agent command, PR-specific instructions.
+    for role, prompt, name in [*((r, r, f"muster-{r}") for r in ROLES), *((r, f"pr-{r}", f"muster-pr-{r}") for r in ("tinker", "nitpick"))]:
         rc = cfg["roles"][role]
         cmd = agent_command(rc["command"], spec_roots(cfg))
         ready = rc.get("ready") or ("" if agent_name(rc["command"]) in REPORTING else "quiet")
-        head = [f"description: Muster {TITLES[role]}: {BLURB[role]}. Started by Herder; task: spec dir, herder, repos, peers.",
+        what = BLURB[role] if prompt == role else ("fixes PR failures and review comments" if role == "tinker" else "checks each PR fix before it's pushed")
+        head = [f"description: Muster {TITLES[role]}: {what}. Started by Herder.",
                 f"command: MUSTER_ROLE={TITLES[role]} {cmd}"]
         head += [f"ready: {ready}"] if ready else []
         head += [f"{k}: {rc[k]}" for k in ("submit", "stop", "paste_gap_ms") if k in rc]
-        (TEMPLATES / f"muster-{role}.md").write_text("---\n" + "\n".join(head) + "\n---\n" + role_prompt(role))
+        (TEMPLATES / f"{name}.md").write_text("---\n" + "\n".join(head) + "\n---\n" + role_prompt(prompt))
 
 
 def install_service() -> str:
@@ -646,6 +943,9 @@ def doctor() -> None:
         cmd = cfg["roles"][role]["command"]
         checks.append((f"{role}: `{agent_name(cmd)}` on PATH", bool(shutil.which(agent_name(cmd)))))
         checks.append((f"template muster-{role}", (TEMPLATES / f"muster-{role}.md").is_file()))
+    for role in ("tinker", "nitpick"):
+        checks.append((f"template muster-pr-{role}", (TEMPLATES / f"muster-pr-{role}.md").is_file()))
+    checks.append(("gh on PATH (PR mode)", bool(shutil.which("gh"))))
     for root in spec_roots(cfg):
         checks.append((f"spec root {root}", root.is_dir()))
     if sys.platform == "darwin":
@@ -675,6 +975,10 @@ def main() -> None:
         watch()
     elif cmd == "run" and len(a) == 2:
         run(Path(a[1]))
+    elif cmd == "pr" and len(a) == 2:
+        print(pr_start(a[1]))
+    elif cmd == "run-pr" and len(a) == 2:
+        run_pr(Path(a[1]))
     else:
         print(__doc__)
         sys.exit(0 if cmd in ("", "-h", "--help") else 2)

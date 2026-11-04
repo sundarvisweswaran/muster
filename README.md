@@ -132,6 +132,20 @@ or `**Status:** Herd`, or `Status: Herd`. Repo names resolve to `<spec root>/../
 - **By hand:** `muster start <spec dir>`. Same as hands-off, without touching Status.
 - If a herd escalates, Nitpick still rejects after 3 rounds and everything stays up. Steer Tinker or Plotter in their panes, then run `muster resume <spec dir>`.
 
+## Watching a pull request
+
+Tell your agent "watch PR 1234 and get it green" (or run `muster pr <url | owner/repo#N | N>`). Your agent's pane joins a space for the PR, next to Tinker and Nitpick:
+
+- **Herder polls the PR** every 90 s. Once the current head's checks finish, it hands Tinker one round of new feedback: failed checks (commit statuses and check runs, with annotations), plus new or edited comments, inline comments and reviews.
+  - A review bot that edits a single comment in place counts as new feedback each time that comment's `updated_at` changes.
+  - Comments from the `gh` account the agents use are ignored, so their own replies don't start rounds.
+- **Tinker triages every item:** fix, push back, not a defect (an approval gate, a failure the base branch has too, a flaky test), needs a human, or already done. It fixes the real defects and proves each fix with a mutation check. It commits locally and writes `round-N-fix.md`, including the replies it plans to post.
+- **Nitpick checks the round before anything is pushed.** It re-runs the proofs, hunts for the inverse defect each fix might have introduced, and checks the replies are accurate. It approves, or sends the round back (up to 3 times, then it escalates).
+- **Tinker pushes to the PR's own branch and replies** on each comment. It never opens another PR, never merges, never force-pushes and never resolves threads.
+- **It stops when the head is green and nothing new has arrived** (converged), or when the PR is merged or closed, or after 10 rounds. Your agent gets the outcome, plus any items that need you along the way.
+
+The PR's branch is used wherever it's already checked out; otherwise a worktree goes under `~/code/.muster-worktrees/`. PRs from forks aren't supported. Notes go in `<spec root>/prs/<repo>-pr<N>/`: `PR.md` (a log of the rounds), and `round-N.md`, `round-N-fix.md` and `round-N-check.md` for each round. Settings: `pr_poll` (seconds, default 90) and `pr_max_rounds` (default 10) in `config.toml`.
+
 ## How it works
 
 - `muster watch` (the service) checks the spec roots every 5 s. When it finds the trigger, it sets Status to `In progress (muster)` and runs `muster start`.
