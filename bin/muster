@@ -188,6 +188,30 @@ def tab_id(d: Path) -> str:
     return "tbmuster" + hashlib.sha1(str(d).encode()).hexdigest()[:20]
 
 
+def repo_bases(text: str) -> dict[str, str]:
+    """`academia-electron (base academia-library)` in the Repos row -> {"academia-electron": "academia-library"}."""
+    m = REPOS_RE.search(text)
+    return {r: b.strip() for r, b in re.findall(r"([A-Za-z0-9._-]+)\s*\(\s*base\s+([^)\s]+)\s*\)", m.group("val") if m else "")}
+
+
+def target_base(repo: Path, named: str | None) -> tuple[str, str]:
+    """(branch, commit) a herd starts from and its PR targets: the spec's `(base X)`, else the remote's default
+    branch, taken from origin after a fetch. Never the user's current local branch, which may exist only locally.
+    Falls back to local HEAD only for a repo without a reachable origin."""
+    if subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin"], capture_output=True).returncode == 0:
+        if not named:
+            head = subprocess.run(["git", "-C", str(repo), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+            named = head.removeprefix("origin/") or None
+        if named:
+            sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"origin/{named}"],
+                                 capture_output=True, text=True).stdout.strip()
+            if not sha:
+                raise RuntimeError(f"base branch {named!r} isn't on {repo.name}'s origin; fix the spec's Repos row")
+            return named, sha
+    return git(repo, "rev-parse", "--abbrev-ref", "HEAD"), git(repo, "rev-parse", "HEAD")
+
+
 def resolve_repos(text: str, code_root: Path) -> list[Path]:
     m = REPOS_RE.search(text)
     found: list[Path] = []
@@ -535,7 +559,7 @@ def ls_data() -> dict:
             status = get_status(sf.read_text()) or ""
             age = (time.time() - sf.stat().st_mtime) / 60
             ran = (d / "muster.log").is_file()  # Muster herded it, not just a spec with a similar status
-            if ran and age < 7 * 24 * 60 and re.match(r"(Implemented|Shipped|In review|Muster failed)", status):
+            if ran and age < 7 * 24 * 60 and re.match(r"(Implemented|Shipped|In review|Muster failed|Signed off)", status):
                 recent.append({"name": d.name, "spec": str(d.resolve()), "status": status, "age_min": int(age)})
             scribe = d / ".muster-scribe.json"
             if scribe.is_file() and status.lower().startswith("ready"):  # drafted by Scribe, not herded yet
@@ -667,27 +691,27 @@ class Herder:
         self.branch = meta.get("branch") or f"muster/{self.id}"
         trees: dict[str, dict] = meta.get("worktrees", {})
         dirty: list[str] = []
+        bases = repo_bases(self.sf.read_text()) if self.sf else {}
         for repo in self.repos:
             t = trees.get(str(repo))
             if t and (Path(t["path"]) / ".git").exists():
                 continue
             wt = repo.parent / ".muster-worktrees" / f"{repo.name}-{self.id}"
-            base = git(repo, "rev-parse", "HEAD")
-            base_branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")  # the PR's target; "HEAD" when detached
+            base_branch, base = target_base(repo, bases.get(repo.name))
             if git(repo, "status", "--porcelain"):
                 dirty.append(repo.name)
             has_branch = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"refs/heads/{self.branch}"],
                                         capture_output=True).returncode == 0
             git(repo, "worktree", "add", *([str(wt), self.branch] if has_branch else ["-b", self.branch, str(wt), base]))
             trees[str(repo)] = {"path": str(wt), "base": base, "base_branch": base_branch}
-            self.log(f"worktree {wt} on {self.branch} from {base[:8]}")
+            self.log(f"worktree {wt} on {self.branch} from {base_branch} @ {base[:8]}")
         meta_path.write_text(json.dumps({"branch": self.branch, "worktrees": trees}, indent=2) + "\n")
         self.trees = trees
         self.cwd = Path(trees[str(self.repos[0])]["path"])
         if dirty:
-            self.tell_origin(f"Muster: heads-up, {', '.join(dirty)} had uncommitted changes. The herd works in its own worktree from the last commit, "
-                             f"so those changes aren't in it.")
-        parts = [f"{t['path']} (base {t['base'][:12]}, original checkout {orig}: don't touch it)" for orig, t in trees.items()]
+            self.tell_origin(f"Muster: heads-up, {', '.join(dirty)} had uncommitted changes. The herd starts from the base branch on origin, "
+                             f"not from your checkout, so those changes (and any unpushed commits) aren't in it.")
+        parts = [f"{t['path']} (base branch {t.get('base_branch')} @ {t['base'][:12]}, original checkout {orig}: don't touch it)" for orig, t in trees.items()]
         return (f"{'; '.join(parts)}. This herd works only in these worktrees, on branch {self.branch}. "
                 "PLAN.md's Repos must list these worktree paths")
 
@@ -713,9 +737,9 @@ class Herder:
                 f"Nitpick verified it. Plan: `{self.d}/PLAN.md`; build notes: `{self.d}/IMPL.md`.\n")
 
     def ship(self) -> list[dict]:
-        """Push each worktree's branch and open a PR against the branch the user's checkout was on.
+        """Push each worktree's branch and open a PR against its base (the spec's `(base X)` or origin's default branch).
         Repos without a GitHub `origin`, or with no new commits, are skipped (the branch stays local)."""
-        prs = []
+        prs, self.ship_errors = [], []
         title = next((l[2:].strip() for l in (self.sf.read_text() if self.sf else "").splitlines() if l.startswith("# ")), self.d.name)
         draft = ["--draft"] if config().get("pr_draft") else []
         for repo, t in getattr(self, "trees", {}).items():
@@ -742,6 +766,7 @@ class Herder:
                 self.log(f"shipped {repo} as {url}")
             except RuntimeError as e:
                 self.log(f"!! ship {repo} failed: {e}; the work stays on {self.branch}")
+                self.ship_errors.append(f"{Path(repo).name}: {str(e)[:160]}")
         return prs
 
     def run(self) -> None:
@@ -794,6 +819,13 @@ class Herder:
                     self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF and shipped as {', '.join(p['url'] for p in prs)}. "
                                      f"Muster now watches {'it' if len(prs) == 1 else 'them'} until green (your pane moves to the PR's space); "
                                      f"it never merges. Verdict: {self.d}/VERDICT.md.")
+                    return
+                if getattr(self, "ship_errors", None):
+                    why = "; ".join(self.ship_errors)
+                    self.set_spec_status(f"Signed off, PR not opened ({why[:120]}); work on {self.branch}")
+                    self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF, but the PR couldn't be opened: {why}. The work is committed on "
+                                     f"branch {self.branch} ({'; '.join(done)}). Fix the cause (often the spec's `(base …)`), then open the PR "
+                                     f"from that branch and run `muster pr <url>` to watch it.")
                     return
                 where = (f" The work is committed on branch {self.branch}: {'; '.join(done)}. Your checkout wasn't touched; "
                          f"bring it in with `git merge {self.branch}` (or open a PR from it).") if done else ""

@@ -93,7 +93,7 @@ export default class Board extends View {
       }
       for (const r of d.recent ?? []) {
         const col = r.status.startsWith("In review") ? "PR" : "Done";
-        cols[col].push({ key: `r-${machine}-${r.name}`, name: r.name, machine, alert: r.status.startsWith("Muster failed"),
+        cols[col].push({ key: `r-${machine}-${r.name}`, name: r.name, machine, alert: r.status.startsWith("Muster failed") || r.status.startsWith("Signed off, PR not opened"),
           detail: r.status, age: `${age(r.age_min)} ago` });
       }
     }
