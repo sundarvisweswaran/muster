@@ -4,7 +4,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, machines, run, theme, props, closeOverlay } from "herdr";
 
-const COLUMNS = ["Queued", "Planning", "Building", "Verifying", "PR", "Done"];
+const COLUMNS = ["Inbox", "Queued", "Planning", "Building", "Verifying", "PR", "Done"]; // Inbox: Scribe's drafts awaiting your Herd
 
 function age(min) {
   if (min >= 1440) return `${Math.floor(min / 1440)}d`;
@@ -86,6 +86,10 @@ export default class Board extends View {
       }
       for (const q of d.queue) {
         cols.Queued.push({ key: `q-${machine}-${q.name}`, name: q.name, machine, detail: `#${q.position} in line` });
+      }
+      for (const i of d.inbox ?? []) {
+        cols.Inbox.push({ key: `i-${machine}-${i.name}`, name: i.name, machine, detail: `${i.ticket ?? "draft"} · set Status: Herd to start`,
+          age: `${age(i.age_min)} ago` });
       }
       for (const r of d.recent ?? []) {
         const col = r.status.startsWith("In review") ? "PR" : "Done";

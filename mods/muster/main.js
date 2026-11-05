@@ -93,11 +93,13 @@ export default class Muster extends View {
     let running = 0;
     const caps = []; // "this computer 2/2", "yolo 0/2": max_herds is per machine
     let queued = 0;
+    let drafts = 0; // Scribe's specs waiting for you to mark Herd
     const rows = [];
     for (const [machine, d] of entries) {
       running += d.running;
       caps.push(`${machine || "this computer"} ${d.running}/${d.max_herds}`);
       queued += d.queue.length;
+      drafts += (d.inbox ?? []).length;
       for (const h of d.herds) rows.push(this.herdRow(t, machine, h, multi));
       for (const q of d.queue) rows.push(this.queueRow(t, machine, q, multi));
     }
@@ -131,7 +133,7 @@ export default class Muster extends View {
               .child("Board ↗")))
           .child(div().id("mu-count").text_size(11).text_color(t.dim)
             .tooltip(`Herds running / max_herds, per machine: ${caps.join(", ")}`)
-            .child(entries.length ? `${running} running${queued ? ` · ${queued} queued` : ""}` : "")),
+            .child(entries.length ? `${running} running${queued ? ` · ${queued} queued` : ""}${drafts ? ` · ${drafts} to review` : ""}` : "")),
       )
       .when(rows.length === 0, (el) =>
         el.child(div().px(16).text_size(12).text_color(t.dim).child(entries.length

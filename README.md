@@ -140,6 +140,24 @@ or `**Status:** Herd`, or `Status: Herd`. Repo names resolve to `<spec root>/../
 - **By hand:** `muster start <spec dir>`. Same as hands-off, without touching Status.
 - If a herd escalates, Nitpick still rejects after 3 rounds and everything stays up. Steer Tinker or Plotter in their panes, then run `muster resume <spec dir>`.
 
+## Intake from Linear (Scribe)
+
+Optional, per machine. With a `[scribe]` section in `config.toml`, the watcher starts **Scribe** (an agent with your Linear MCP tools) every `every` seconds. Scribe:
+
+- finds open tickets in `team` that carry `label` and don't have a spec yet (no `<spec root>/<ID>-*` folder). It reads each one, its comments and the code in `repos`, then writes `spec.md` (Status `Ready`, a Repos row, numbered requirements, a verification plan; following your spec-driven-development skill if you have one) and a draft `PLAN.md`. It comments the spec path and a summary on the ticket, at most `max_per_check` tickets per run;
+- syncs later: when you mark a draft `Herd`, it moves the ticket to In Progress; when it ships, it comments the PR link.
+
+Drafts show in the board's **Inbox** column and as "N to review" in the sidebar panel. Nothing builds until you set Status to `Herd` or use `/herd`. `muster intake` runs a check now.
+
+```toml
+[scribe]
+team = "ALIB"
+label = "muster"
+every = 900
+max_per_check = 3
+repos = ["academia-electron", "academia-app", "academia-browser-extensions"]
+```
+
 ## Watching a pull request
 
 Tell your agent "watch PR 1234 and get it green" (or run `muster pr <url | owner/repo#N | N>`). Your agent's pane joins a space for the PR, next to Tinker and Nitpick:

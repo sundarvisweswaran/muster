@@ -43,9 +43,9 @@ HERDR_MODS = HOME / ".config" / "herdr-app" / "mods"
 REPO = Path(__file__).resolve().parent.parent
 
 ROLES = ("plotter", "tinker", "nitpick")
-TITLES = {"herder": "Herder", "plotter": "Plotter", "tinker": "Tinker", "nitpick": "Nitpick"}
+TITLES = {"herder": "Herder", "plotter": "Plotter", "tinker": "Tinker", "nitpick": "Nitpick", "scribe": "Scribe"}
 BLURB = {"plotter": "reviews the draft PLAN.md (or writes one) and finalizes it", "tinker": "builds the FINAL plan",
-         "nitpick": "verifies independently and signs off"}
+         "nitpick": "verifies independently and signs off", "scribe": "drafts specs from labeled Linear tickets"}
 # Agents known to report status to herdr (OSC 7501); others get `ready: quiet`.
 REPORTING = {"omp", "claude", "codex", "pi", "opencode", "amp", "droid", "gemini", "kimi", "qwen", "cursor-agent", "devin"}
 DOC = "herdr-app"
@@ -68,6 +68,14 @@ command = "omp"
 
 [roles.nitpick]
 command = "omp"                 # e.g. "codex --model gpt-5" to have another model check the work
+
+# Intake (optional): Scribe turns tickets carrying `label` into draft specs every `every` seconds.
+# [scribe]
+# team = "ALIB"
+# label = "muster"
+# every = 900
+# max_per_check = 3
+# repos = ["academia-electron", "academia-app", "academia-browser-extensions"]
 """
 
 
@@ -101,7 +109,7 @@ def config() -> dict:
     cfg.setdefault("spec_roots", ["~/code/specs"])
     cfg.setdefault("trigger", "Herd")
     roles = cfg.setdefault("roles", {})
-    for r in ROLES:
+    for r in (*ROLES, "scribe"):
         roles.setdefault(r, {}).setdefault("command", "omp")
     return cfg
 
@@ -429,6 +437,7 @@ def watch(interval: float = 5.0) -> None:
     print(f"muster watch: roots {', '.join(map(str, spec_roots(cfg)))}; trigger Status: {cfg['trigger']}; "
           f"max_herds {cfg.get('max_herds', 2)}", flush=True)
     seen: dict[Path, float] = {}
+    next_scribe = time.time() + 30  # first intake check shortly after start
     while True:
         for root in spec_roots(cfg):
             for d in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
@@ -449,7 +458,33 @@ def watch(interval: float = 5.0) -> None:
             drain_queue(cfg)
         except Exception as e:  # noqa: BLE001 - keep watching; a bad queue entry shouldn't stop the daemon
             print(f"queue: {e}", flush=True)
+        if isinstance(cfg.get("scribe"), dict) and time.time() >= next_scribe:
+            next_scribe = time.time() + int(cfg["scribe"].get("every", 900))
+            try:
+                print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} scribe: {scribe_check(cfg)}", flush=True)
+            except Exception as e:  # noqa: BLE001 - intake is best-effort; try again next time
+                print(f"scribe: {e}", flush=True)
         time.sleep(interval)
+
+
+def scribe_check(cfg: dict) -> str:
+    """Start a fresh Scribe for one intake check, unless one is still working. A Scribe that finished its
+    last check (idle) is closed first, so every check starts with a small context."""
+    sc = cfg.get("scribe") or {}
+    if not sc.get("team") or not sc.get("label"):
+        raise RuntimeError("[scribe] needs team and label in config.toml")
+    for t in live_terminals(**{"muster.role": "scribe"}):
+        if t.get("status") == "working":
+            return f"still working ({t['address']})"
+        subprocess.run(["hc", "kill", t["address"]], capture_output=True)
+        subprocess.run(["hc", "rm", t["address"]], capture_output=True)
+    root = spec_roots(cfg)[0]
+    repos = ", ".join(str(root.parent / r) for r in sc.get("repos", [])) or f"the git checkouts in {root.parent}"
+    task = (f"CHECK {time.strftime('%Y-%m-%d %H:%M')}: Linear team {sc['team']}, label `{sc['label']}`, spec root {root}, "
+            f"repos {repos}. Draft at most {int(sc.get('max_per_check', 3))} new ticket(s) this check.")
+    out = hc("run", "--bg", "--no-parent", "--name", "muster-scribe", "--cwd", str(root.parent),
+             "--label", "muster.role=scribe", "muster-scribe", task)
+    return f"started {out.get('address', '?')}"
 
 
 def ls_data() -> dict:
@@ -477,7 +512,7 @@ def ls_data() -> dict:
                       "spec": spec, "space": space_id(d)})
     queue = [{"name": d.name, "spec": str(d), "position": i} for i, d in enumerate(queued_specs(cfg), 1)]
     busy = {h["spec"] for h in herds} | {q["spec"] for q in queue}
-    recent = []
+    recent, inbox = [], []
     for root in spec_roots(cfg):
         for d in (p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
             sf = spec_file(d)
@@ -488,9 +523,16 @@ def ls_data() -> dict:
             ran = (d / "muster.log").is_file()  # Muster herded it, not just a spec with a similar status
             if ran and age < 7 * 24 * 60 and re.match(r"(Implemented|Shipped|In review|Muster failed)", status):
                 recent.append({"name": d.name, "spec": str(d.resolve()), "status": status, "age_min": int(age)})
+            scribe = d / ".muster-scribe.json"
+            if scribe.is_file() and status.lower().startswith("ready"):  # drafted by Scribe, not herded yet
+                meta = json.loads(scribe.read_text())
+                inbox.append({"name": d.name, "spec": str(d.resolve()), "ticket": meta.get("ticket"),
+                              "url": meta.get("url"), "age_min": int(age)})
     recent.sort(key=lambda r: r["age_min"])
+    inbox.sort(key=lambda r: r["age_min"])
     return {"max_herds": int(cfg.get("max_herds", 2)), "running": len([h for h in herds if not h["pr"]]),
-            "herds": sorted(herds, key=lambda h: (h["pr"], -h["age_min"])), "queue": queue, "recent": recent[:20]}
+            "herds": sorted(herds, key=lambda h: (h["pr"], -h["age_min"])), "queue": queue, "recent": recent[:20],
+            "inbox": inbox}
 
 
 def ls(as_json: bool = False) -> None:
@@ -1070,12 +1112,13 @@ def run_pr(d: Path) -> None:
 def write_templates(cfg: dict) -> None:
     TEMPLATES.mkdir(parents=True, exist_ok=True)
     # Spec herds: muster-<role>. PR watches: muster-pr-<role>, same agent command, PR-specific instructions.
-    for role, prompt, name in [*((r, r, f"muster-{r}") for r in ROLES), *((r, f"pr-{r}", f"muster-pr-{r}") for r in ("tinker", "nitpick"))]:
+    for role, prompt, name in [*((r, r, f"muster-{r}") for r in (*ROLES, "scribe")),
+                               *((r, f"pr-{r}", f"muster-pr-{r}") for r in ("tinker", "nitpick"))]:
         rc = cfg["roles"][role]
         cmd = agent_command(rc["command"], spec_roots(cfg))
         ready = rc.get("ready") or ("" if agent_name(rc["command"]) in REPORTING else "quiet")
         what = BLURB[role] if prompt == role else ("fixes PR failures and review comments" if role == "tinker" else "checks each PR fix before it's pushed")
-        head = [f"description: Muster {TITLES[role]}: {what}. Started by Herder.",
+        head = [f"description: Muster {TITLES[role]}: {what}.",
                 f"command: MUSTER_ROLE={TITLES[role]} {cmd}"]
         head += [f"ready: {ready}"] if ready else []
         head += [f"{k}: {rc[k]}" for k in ("submit", "stop", "paste_gap_ms") if k in rc]
@@ -1229,6 +1272,8 @@ def main() -> None:
         ls(as_json="--json" in a)
     elif cmd == "resume" and len(a) == 2:
         print(resume(Path(a[1])))
+    elif cmd == "intake":
+        print(scribe_check(config()))
     elif cmd == "watch":
         watch()
     elif cmd == "run" and len(a) == 2:
