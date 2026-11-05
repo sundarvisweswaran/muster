@@ -56,6 +56,8 @@ spec_roots = ["~/code/specs"]   # each spec: <root>/<folder>/spec.md (or SPEC.md
 trigger = "Herd"                # a spec's Status value that starts a herd
 # editor = "nvim"               # opens a spec from its pane header; default: $VISUAL/$EDITOR, else nvim/hx/vim/nano/vi
 max_herds = 2                   # herds running at once on this machine; more are queued (PR watches don't count)
+ship = "pr"                     # at sign-off: "pr" pushes muster/<spec>, opens a PR and watches it until green; "branch" keeps it local
+# pr_draft = true               # open shipped PRs as drafts
 
 [roles.plotter]
 command = "omp"
@@ -599,12 +601,13 @@ class Herder:
                 continue
             wt = repo.parent / ".muster-worktrees" / f"{repo.name}-{self.id}"
             base = git(repo, "rev-parse", "HEAD")
+            base_branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")  # the PR's target; "HEAD" when detached
             if git(repo, "status", "--porcelain"):
                 dirty.append(repo.name)
             has_branch = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"refs/heads/{self.branch}"],
                                         capture_output=True).returncode == 0
             git(repo, "worktree", "add", *([str(wt), self.branch] if has_branch else ["-b", self.branch, str(wt), base]))
-            trees[str(repo)] = {"path": str(wt), "base": base}
+            trees[str(repo)] = {"path": str(wt), "base": base, "base_branch": base_branch}
             self.log(f"worktree {wt} on {self.branch} from {base[:8]}")
         meta_path.write_text(json.dumps({"branch": self.branch, "worktrees": trees}, indent=2) + "\n")
         self.trees = trees
@@ -627,6 +630,47 @@ class Herder:
                     f"muster({self.id}): leftovers at sign-off")
             out.append(f"{wt} @ {git(wt, 'rev-parse', '--short', 'HEAD')}")
         return out
+
+    def pr_body(self) -> str:
+        spec = self.sf.read_text() if self.sf else ""
+        reqs = re.search(r"^##+ Requirements\s*\n(.*?)(?=^##+ |\Z)", spec, re.M | re.S)
+        verdict = (self.d / "VERDICT.md").read_text() if (self.d / "VERDICT.md").is_file() else ""
+        return (f"Spec: `{self.sf}`\n\n## Requirements\n\n{(reqs.group(1).strip() if reqs else '(see the spec)')}\n\n"
+                f"## Verification\n\nIndependently verified by Muster's Nitpick (`{self.d}/VERDICT.md`):\n\n{verdict.strip()[:50000]}\n\n"
+                f"---\nBuilt by [Muster](https://github.com/sundarvisweswaran/muster): Plotter reviewed the plan, Tinker built it, "
+                f"Nitpick verified it. Plan: `{self.d}/PLAN.md`; build notes: `{self.d}/IMPL.md`.\n")
+
+    def ship(self) -> list[dict]:
+        """Push each worktree's branch and open a PR against the branch the user's checkout was on.
+        Repos without a GitHub `origin`, or with no new commits, are skipped (the branch stays local)."""
+        prs = []
+        title = next((l[2:].strip() for l in (self.sf.read_text() if self.sf else "").splitlines() if l.startswith("# ")), self.d.name)
+        draft = ["--draft"] if config().get("pr_draft") else []
+        for repo, t in getattr(self, "trees", {}).items():
+            wt, base = Path(t["path"]), t.get("base_branch") or "HEAD"
+            try:
+                if git(wt, "rev-list", "--count", f"{t['base']}..HEAD") == "0":
+                    self.log(f"ship {repo}: no new commits; nothing to open")
+                    continue
+                if "github.com" not in git(wt, "remote", "get-url", "origin"):
+                    self.log(f"ship {repo}: origin isn't GitHub; the work stays on {self.branch}")
+                    continue
+                if base == "HEAD":
+                    head = subprocess.run(["git", "-C", str(wt), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], capture_output=True, text=True)
+                    base = head.stdout.strip().removeprefix("origin/") or "main"
+                git(wt, "push", "-u", "origin", self.branch)
+                body = self.d / f".pr-body-{Path(repo).name}.md"
+                body.write_text(self.pr_body())
+                p = subprocess.run(["gh", "pr", "create", "--base", base, "--head", self.branch, "--title", title,
+                                    "--body-file", str(body), *draft], cwd=wt, capture_output=True, text=True)
+                if p.returncode != 0:
+                    raise RuntimeError(p.stderr.strip()[:300])
+                url = p.stdout.strip().splitlines()[-1]
+                prs.append({"repo": repo, "url": url})
+                self.log(f"shipped {repo} as {url}")
+            except RuntimeError as e:
+                self.log(f"!! ship {repo} failed: {e}; the work stays on {self.branch}")
+        return prs
 
     def run(self) -> None:
         repos = self.prepare_worktrees()
@@ -665,7 +709,20 @@ class Herder:
                 self.set_spec_status("Implemented (muster signed off; see VERDICT.md)")
                 self.log("SIGNED OFF")
                 done = self.commit_leftovers()
+                prs = self.ship() if config().get("ship", "pr") == "pr" else []
                 self.close()
+                if prs:
+                    self.set_spec_status(f"In review (muster: {', '.join(p['url'] for p in prs)})")
+                    watching = []
+                    for p in prs:
+                        try:
+                            watching.append(pr_start(p["url"], origin=self.origin, spec=self.d))
+                        except Exception as e:  # noqa: BLE001 - the PR exists; report a watch that didn't start
+                            self.log(f"!! couldn't start the PR watch for {p['url']}: {e}")
+                    self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF and shipped as {', '.join(p['url'] for p in prs)}. "
+                                     f"Muster now watches {'it' if len(prs) == 1 else 'them'} until green (your pane moves to the PR's space); "
+                                     f"it never merges. Verdict: {self.d}/VERDICT.md.")
+                    return
                 where = (f" The work is committed on branch {self.branch}: {'; '.join(done)}. Your checkout wasn't touched; "
                          f"bring it in with `git merge {self.branch}` (or open a PR from it).") if done else ""
                 self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF. Verdict: {self.d}/VERDICT.md; plan: {self.d}/PLAN.md; "
@@ -757,7 +814,7 @@ def pr_checkout(repo: str, number: int, branch: str, code_root: Path) -> Path:
     return wt
 
 
-def pr_start(ref: str) -> str:
+def pr_start(ref: str, origin: str | None = None, spec: Path | None = None) -> str:
     """`muster pr <ref>` from an agent's terminal: that agent joins the PR's space and gets the outcome."""
     root = spec_roots(config())[0]
     repo, number = parse_pr(ref, Path.cwd())
@@ -770,13 +827,14 @@ def pr_start(ref: str) -> str:
     d = (root / "prs" / f"{repo.split('/')[1]}-pr{number}").resolve()
     d.mkdir(parents=True, exist_ok=True)
     meta = {"repo": repo, "number": number, "url": info["url"], "title": info["title"],
-            "branch": info["headRefName"], "base": info["baseRefName"], "checkout": str(checkout)}
+            "branch": info["headRefName"], "base": info["baseRefName"], "checkout": str(checkout),
+            "spec": str(spec) if spec else None}
     (d / ".muster-pr.json").write_text(json.dumps(meta, indent=2) + "\n")
     if not (d / "PR.md").exists():
         (d / "PR.md").write_text(f"# {info['title']}\n\n| | |\n|---|---|\n| **PR** | {info['url']} |\n"
                                  f"| **Branch** | {info['headRefName']} → {info['baseRefName']} |\n"
                                  f"| **Checkout** | {checkout} |\n| **Status** | Watching (muster) |\n\n## Rounds\n")
-    me = os.environ.get("HC_TERMINAL_ID")
+    me = origin or os.environ.get("HC_TERMINAL_ID")
     origin = d / ".muster-origin.json"
     if me:
         origin.write_text(json.dumps({"terminal": me, "core": core_id()}) + "\n")
@@ -885,6 +943,12 @@ class PrHerder(Herder):
 
     def finish(self, outcome: str) -> None:
         set_status(self.d / "PR.md", f"{outcome} (muster)")
+        spec = self.meta.get("spec") and spec_file(Path(self.meta["spec"]))
+        if spec:  # a herd shipped this PR: carry the outcome back to its spec
+            n = f"PR #{self.number}"
+            set_status(spec, {"MERGED": f"Shipped ({n} merged)", "CLOSED": f"In progress ({n} closed without merging)"}.get(
+                outcome, f"Implemented ({n} green; awaiting your merge)" if outcome.startswith("CONVERGED")
+                else f"In review ({n}: {outcome.lower()}; see {self.d}/PR.md)"))
         self.note(outcome)
         self.log(outcome)
         self.close()
@@ -954,6 +1018,7 @@ class PrHerder(Herder):
         self.launch("nitpick", f"{common} Tinker: {self.name('tinker')}. Wait for a CHECK message from Tinker.")
         self.paused = False
         self.next_poll = time.time() + 20  # let both agents boot
+        self.quiet_until = time.time() + 180  # a fresh PR's CI and review bots can take a while to register checks
         buf = b""
         while True:
             ready, _, _ = select.select([0], [], [], max(1.0, self.next_poll - time.time()))

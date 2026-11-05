@@ -81,7 +81,7 @@ Read this before you install it:
 
 - **The `muster` CLI**, at `~/.local/bin/muster`, plus its files in `~/.local/share/muster` and your config in `~/.config/muster/config.toml`.
 - **A background watcher on each machine.** It's a launchd user agent `dev.herdr.muster` on macOS, or a `systemd --user` unit `muster.service` on Linux. It checks your spec roots every 5 s and starts a herd when a spec's Status says `Herd`. Nothing else triggers it.
-- **Agents that run without permission prompts.** Each herd starts three coding agents through herdr-core (`hc run`), using the herdr-core templates `muster-{plotter,tinker,nitpick}` in `~/.config/herdr-core/templates/`. They can run any command in the repos the spec names, and they write `PLAN.md`, `IMPL.md` and `VERDICT.md` next to the spec. Each herd works in its own git worktree (`~/code/.muster-worktrees/<repo>-<spec>`), on a new branch `muster/<spec>` cut from your repo's current commit. Tinker commits there and never pushes. Your checkout is never touched, and uncommitted changes in it aren't included; your agent is told when that happens. Bring the work in with `git merge muster/<spec>`, or open a PR from that branch. Muster adds these flags:
+- **Agents that run without permission prompts.** Each herd starts three coding agents through herdr-core (`hc run`), using the herdr-core templates `muster-{plotter,tinker,nitpick}` in `~/.config/herdr-core/templates/`. They can run any command in the repos the spec names, and they write `PLAN.md`, `IMPL.md` and `VERDICT.md` next to the spec. Each herd works in its own git worktree (`~/code/.muster-worktrees/<repo>-<spec>`), on a new branch `muster/<spec>` cut from your repo's current commit. Tinker commits there and never pushes. Your checkout is never touched, and uncommitted changes in it aren't included; your agent is told when that happens. At sign-off, with `ship = "pr"` (the default), Muster pushes `muster/<spec>`, opens a PR against the branch your checkout was on (its body lists the spec's requirements and Nitpick's verification), and hands it to PR mode in the same worktree: your agent's pane moves to the PR's space, and failed checks and review comments get fixed until it's green. The spec's Status then reads `Implemented (PR #N green; awaiting your merge)`; Muster never merges. With `ship = "branch"`, or for a repo without a GitHub remote, the work just stays on `muster/<spec>` (`git merge muster/<spec>`). Muster adds these flags:
   - omp: a settings overlay with no startup plan mode and `approvalMode: yolo`, plus a title extension;
   - Codex: `--sandbox workspace-write --ask-for-approval never`, unless you set a policy yourself;
   - Codex and Claude: the spec roots, passed with `--add-dir`.
@@ -98,6 +98,7 @@ spec_roots = ["~/code/specs"]
 trigger = "Herd"
 editor = "nvim"   # opens the spec link; default: $VISUAL/$EDITOR, else nvim/hx/vim/nano/vi
 max_herds = 2     # herds running at once on this machine; more are queued
+ship = "pr"       # at sign-off, open a PR and watch it until green; "branch" keeps the work local
 
 [roles.plotter]
 command = "omp"
