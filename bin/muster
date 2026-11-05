@@ -198,7 +198,7 @@ def target_base(repo: Path, named: str | None) -> tuple[str, str]:
     """(branch, commit) a herd starts from and its PR targets: the spec's `(base X)`, else the remote's default
     branch, taken from origin after a fetch. Never the user's current local branch, which may exist only locally.
     Falls back to local HEAD only for a repo without a reachable origin."""
-    if subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin"], capture_output=True).returncode == 0:
+    if subprocess.run(["git", "-C", str(repo), "fetch", "-q", "--prune", "origin"], capture_output=True).returncode == 0:
         if not named:
             head = subprocess.run(["git", "-C", str(repo), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
                                   capture_output=True, text=True).stdout.strip()
