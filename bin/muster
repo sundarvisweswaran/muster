@@ -193,9 +193,10 @@ def tab_id(d: Path) -> str:
 
 
 def repo_bases(text: str) -> dict[str, str]:
-    """`academia-electron (base academia-library)` in the Repos row -> {"academia-electron": "academia-library"}."""
+    """`academia-electron (base academia-library)` in the Repos row -> {"academia-electron": "academia-library"}.
+    Notes after the branch are fine: `(base master; two PRs)`, `(base main, no UI)`."""
     m = REPOS_RE.search(text)
-    return {r: b.strip() for r, b in re.findall(r"([A-Za-z0-9._-]+)\s*\(\s*base\s+([^)\s]+)\s*\)", m.group("val") if m else "")}
+    return {r: b.strip() for r, b in re.findall(r"([A-Za-z0-9._-]+)\s*\(\s*base\s+([^)\s;,]+)[^)]*\)", m.group("val") if m else "")}
 
 
 def target_base(repo: Path, named: str | None) -> tuple[str, str]:
