@@ -334,6 +334,9 @@ def write_layout(d: Path, folder: str, members: dict[str, str] | None, grid: lis
                 space.setdefault("tabs", []).append(tab)
             panes = _blocks(tab.get("root"), {})
             rows = []
+            shown = [r for row in grid for r in row if r in members]
+            if len(shown) == 2:  # two panes read best side by side, not stacked
+                grid = [shown]
             for i, row in enumerate(grid):
                 cells = [r for r in row if r in members]
                 if cells:
