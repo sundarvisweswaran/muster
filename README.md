@@ -70,7 +70,10 @@ git clone <this repo> ~/code/muster
 muster doctor
 ```
 
-`install` refreshes everything and keeps your config, so re-running it is safe. To see roles in the pane headers, set your layout's pane header to the mod: in `~/.config/herdr-app/layouts/<layout>.json`, change `"header": {"content": {"mod": "pane"}}` to `"mod": "muster-pane"`. Other panes look the same as before.
+`install` refreshes everything and keeps your config, so re-running it is safe. It installs two Herdr mods; add them to your layout (`~/.config/herdr-app/layouts/<layout>.json`):
+
+- **`muster-pane`**, the pane header: each pane names its role and links to the spec. In your layout, change `"header": {"content": {"mod": "pane"}}` to `"mod": "muster-pane"`. Other panes look the same as before.
+- **`muster`**, the sidebar panel: running herds and PR watches on every connected machine, with their stage (a spinner while working, a red "Needs you" when an agent waits for you), and the queue in order. Click a herd to open its space. Add a block to your sidebar column, for example after `agents`: `{"id": "muster", "type": "block", "content": {"mod": "muster"}, "size": {"weight": 0.6}, "min": 80}`.
 
 ## What it installs and does
 
@@ -94,6 +97,7 @@ Read this before you install it:
 spec_roots = ["~/code/specs"]
 trigger = "Herd"
 editor = "nvim"   # opens the spec link; default: $VISUAL/$EDITOR, else nvim/hx/vim/nano/vi
+max_herds = 2     # herds running at once on this machine; more are queued
 
 [roles.plotter]
 command = "omp"
@@ -130,6 +134,7 @@ or `**Status:** Herd`, or `Status: Herd`. Repo names resolve to `<spec root>/../
 - **From your agent:** `muster herd <spec dir>`. The skill makes this the default, and the agent asks before herding. Your agent's pane joins the herd's space and gets the outcome.
 - **From omp's plan mode: `/herd`.** When the plan review opens, press Esc instead of approving, then type `/herd` (or `/herd <spec dir>`). It leaves plan mode without running the plan, and your agent turns its plan into the spec's draft `PLAN.md` (creating the spec if there isn't one yet). Then it runs `muster herd`. Approving the plan still means "build it here"; `/herd` means "hand it to the herd". `muster install` adds the command to omp as `~/.omp/agent/extensions/muster-herd.ts`.
 - **Several at once:** each herd has its own worktree and branch, so herds on the same repo run in parallel without colliding.
+- **Queue:** at most `max_herds` herds run at once per machine (default 2; PR watches don't count). Beyond that a spec gets `Status: Queued (muster)` and starts by itself when a slot frees, oldest first. `muster ls` (or `muster ls --on <machine>`) lists running herds with their stage (Planning, Building, Verifying, Escalated, needs you) and age, PR watches, and the queue.
 - **Hands-off:** set the spec's Status to `Herd` in any editor. The watcher starts it within ~5 s. There's no origin pane; the space closes once it's signed off.
 - **By hand:** `muster start <spec dir>`. Same as hands-off, without touching Status.
 - If a herd escalates, Nitpick still rejects after 3 rounds and everything stays up. Steer Tinker or Plotter in their panes, then run `muster resume <spec dir>`.

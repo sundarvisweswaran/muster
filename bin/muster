@@ -3,7 +3,8 @@
 
   muster herd <spec dir>          start a herd from an agent's terminal: that agent joins the herd's
                                   space and gets the outcome as a message
-  muster start <spec dir>         start a herd now, with no origin agent
+  muster start <spec dir>         start a herd now (or queue it, past max_herds), with no origin agent
+  muster ls [--on MACHINE]        herds and PR watches with their stage and age, plus the queue
   muster pr <url | owner/repo#N | N>
                                   watch a pull request: Tinker fixes failed checks and addresses review
                                   comments, Nitpick checks each fix, then Tinker pushes and replies;
@@ -54,6 +55,7 @@ DEFAULT_CONFIG = """# Muster config. Each role runs an interactive agent command
 spec_roots = ["~/code/specs"]   # each spec: <root>/<folder>/spec.md (or SPEC.md)
 trigger = "Herd"                # a spec's Status value that starts a herd
 # editor = "nvim"               # opens a spec from its pane header; default: $VISUAL/$EDITOR, else nvim/hx/vim/nano/vi
+max_herds = 2                   # herds running at once on this machine; more are queued (PR watches don't count)
 
 [roles.plotter]
 command = "omp"
@@ -220,8 +222,18 @@ def rpc(method: str, params: dict) -> dict:
 
 
 def live_terminals(**labels: str) -> list[dict]:
-    return [t for t in hc("ls").get("terminals", []) if t.get("state") == "live"
-            and all((t.get("labels") or {}).get(k) == v for k, v in labels.items())]
+    """Live terminals carrying all these labels, with full details (labels, created_ms, status) from `hc get`.
+    `hc ls` filters by label itself but doesn't return labels."""
+    args = [x for k, v in labels.items() for x in ("--label", f"{k}={v}")]
+    found = [t for t in hc("ls", *args).get("terminals", []) if t.get("state") == "live"]
+    full = []
+    for t in found:
+        g = hc("get", t["address"], check=False) or t
+        g.setdefault("status", t.get("status"))
+        if isinstance(g.get("status"), dict):  # `get` reports {app, state}; `ls` a plain word
+            g["status"] = g["status"].get("state")
+        full.append(g)
+    return full
 
 
 # ---------- Herdr layout: the tab lives in herdr-core's `herdr-app` doc, so it works without a window ----------
@@ -339,12 +351,53 @@ def start(d: Path) -> str:
     return out.get("address", "?")
 
 
-def herd(d: Path) -> str:
-    """Start a herd now, from an agent's terminal: that terminal becomes the herd's origin. Its pane
-    moves into the herd's space and it gets the outcome as a message."""
+QUEUED = "Queued (muster)"
+
+
+def running_herds() -> list[dict]:
+    """Live spec herds (PR watches don't count against max_herds: they mostly wait on CI)."""
+    return [t for t in live_terminals(**{"muster.role": "herder"})
+            if not (Path(t["labels"].get("muster.spec", "/")) / ".muster-pr.json").exists()]
+
+
+def queued_specs(cfg: dict) -> list[Path]:
+    """Queued spec dirs, oldest first."""
+    found = []
+    for root in spec_roots(cfg):
+        for d in (p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
+            q, sf = d / ".muster-queued", spec_file(d)
+            if q.is_file() and sf and (get_status(sf.read_text()) or "") == QUEUED:
+                found.append((float(q.read_text().strip() or 0), d.resolve()))
+    return [d for _, d in sorted(found)]
+
+
+def enqueue_or_start(d: Path) -> str:
+    """Start the herd if a slot is free (max_herds), else queue it; the watcher starts queued herds in order."""
     d = d.expanduser().resolve()
     sf = spec_file(d)
     if not sf:
+        raise RuntimeError(f"no spec.md or SPEC.md in {d}")
+    if live_terminals(**{"muster.spec": str(d), "muster.role": "herder"}):
+        return "already running"
+    cfg = config()
+    cap, running = int(cfg.get("max_herds", 2)), len(running_herds())
+    q = d / ".muster-queued"
+    if running >= cap:
+        if not q.is_file():
+            q.write_text(f"{time.time()}\n")
+        set_status(sf, QUEUED)
+        pos = queued_specs(cfg).index(d) + 1
+        return f"queued #{pos}: {running} of {cap} herds are running (max_herds); it starts when a slot frees"
+    q.unlink(missing_ok=True)
+    set_status(sf, "In progress (muster)")
+    return f"started {start(d)}"
+
+
+def herd(d: Path) -> str:
+    """Start (or queue) a herd from an agent's terminal: that terminal becomes the herd's origin. Its pane
+    moves into the herd's space when the herd starts, and it gets the outcome as a message."""
+    d = d.expanduser().resolve()
+    if not spec_file(d):
         raise RuntimeError(f"no spec.md or SPEC.md in {d}")
     origin = d / ".muster-origin.json"
     me = os.environ.get("HC_TERMINAL_ID")
@@ -352,14 +405,27 @@ def herd(d: Path) -> str:
         origin.write_text(json.dumps({"terminal": me, "core": core_id()}) + "\n")
     elif origin.exists():
         origin.unlink()
-    set_status(sf, "In progress (muster)")
-    return start(d)
+    return enqueue_or_start(d)
+
+
+def drain_queue(cfg: dict) -> None:
+    free = int(cfg.get("max_herds", 2)) - len(running_herds())
+    for d in queued_specs(cfg)[:max(free, 0)]:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            (d / ".muster-queued").unlink(missing_ok=True)
+            set_status(spec_file(d), "In progress (muster)")
+            print(f"{stamp} start (from queue) {d}: {start(d)}", flush=True)
+        except Exception as e:  # noqa: BLE001 - surface any launch failure in the spec itself
+            set_status(spec_file(d), f"Muster failed: {str(e)[:120]}")
+            print(f"{stamp} FAILED {d}: {e}", flush=True)
 
 
 def watch(interval: float = 5.0) -> None:
     cfg = config()
     trigger = cfg["trigger"].lower()
-    print(f"muster watch: roots {', '.join(map(str, spec_roots(cfg)))}; trigger Status: {cfg['trigger']}", flush=True)
+    print(f"muster watch: roots {', '.join(map(str, spec_roots(cfg)))}; trigger Status: {cfg['trigger']}; "
+          f"max_herds {cfg.get('max_herds', 2)}", flush=True)
     seen: dict[Path, float] = {}
     while True:
         for root in spec_roots(cfg):
@@ -372,13 +438,60 @@ def watch(interval: float = 5.0) -> None:
                     continue
                 stamp = time.strftime("%Y-%m-%d %H:%M:%S")
                 try:
-                    set_status(sf, "In progress (muster)")
-                    print(f"{stamp} start {d}: {start(d)}", flush=True)
+                    print(f"{stamp} {d}: {enqueue_or_start(d)}", flush=True)
                 except Exception as e:  # noqa: BLE001 - surface any launch failure in the spec itself
                     set_status(sf, f"Muster failed: {str(e)[:120]}")
                     print(f"{stamp} FAILED {d}: {e}", flush=True)
                 seen[sf] = sf.stat().st_mtime
+        try:
+            drain_queue(cfg)
+        except Exception as e:  # noqa: BLE001 - keep watching; a bad queue entry shouldn't stop the daemon
+            print(f"queue: {e}", flush=True)
         time.sleep(interval)
+
+
+def ls_data() -> dict:
+    """Herds and PR watches on this machine (stage, age, who needs you) and the queue, for `ls` and the sidebar panel."""
+    cfg = config()
+    herds = []
+    for herder in live_terminals(**{"muster.role": "herder"}):
+        spec = (herder.get("labels") or {}).get("muster.spec", "")
+        d = Path(spec)
+        roles = {(t.get("labels") or {}).get("muster.role"): t for t in live_terminals(**{"muster.spec": spec})}
+        sf = spec_file(d)
+        status = (get_status(sf.read_text()) if sf else "") or ""
+        pr = (d / ".muster-pr.json").is_file()
+        if pr:
+            meta = json.loads((d / ".muster-pr.json").read_text())
+            st = json.loads((d / ".muster-pr-state.json").read_text()) if (d / ".muster-pr-state.json").is_file() else {}
+            name, stage = f"{meta['repo'].split('/')[1]}#{meta['number']}", f"PR watch · round {st.get('round', 0)}"
+        else:
+            name = d.name
+            stage = ("Escalated" if "escalated" in status.lower() else "Verifying" if "nitpick" in roles
+                     else "Building" if "tinker" in roles else "Planning" if "plotter" in roles else "Starting")
+        needs = [TITLES.get(r, r) for r, t in roles.items() if r and t.get("status") == "blocked"]
+        age = int((time.time() * 1000 - (herder.get("created_ms") or time.time() * 1000)) / 60000)
+        herds.append({"name": name, "stage": stage, "pr": pr, "needs_you": needs, "age_min": age,
+                      "spec": spec, "space": space_id(d)})
+    queue = [{"name": d.name, "spec": str(d), "position": i} for i, d in enumerate(queued_specs(cfg), 1)]
+    return {"max_herds": int(cfg.get("max_herds", 2)), "running": len([h for h in herds if not h["pr"]]),
+            "herds": sorted(herds, key=lambda h: (h["pr"], -h["age_min"])), "queue": queue}
+
+
+def ls(as_json: bool = False) -> None:
+    data = ls_data()
+    if as_json:
+        print(json.dumps(data))
+        return
+    print(f"{data['running']}/{data['max_herds']} herds running, {len(data['queue'])} queued")
+    width = max([len(h["name"]) for h in data["herds"]] + [len(q["name"]) for q in data["queue"]] + [4])
+    for h in data["herds"]:
+        a = h["age_min"]
+        age = f"{a // 60}h{a % 60:02d}m" if a >= 60 else f"{a}m"
+        needs = f" · needs you ({', '.join(h['needs_you'])})" if h["needs_you"] else ""
+        print(f"  {h['name']:<{width}}  {age:>6}  {h['stage']}{needs}")
+    for q in data["queue"]:
+        print(f"  {q['name']:<{width}}  {'':>6}  Queued #{q['position']}")
 
 
 # ---------- Herder ----------
@@ -910,7 +1023,13 @@ def install_service() -> str:
 """)
         uid = os.getuid()
         subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"], capture_output=True)
-        subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=True)
+        for attempt in range(10):  # bootout returns before launchd has torn the old job down
+            r = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], capture_output=True, text=True)
+            if r.returncode == 0:
+                break
+            time.sleep(1)
+        else:
+            raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip()}")
         return f"launchd {label} (log {log})"
     unit = HOME / ".config" / "systemd" / "user" / "muster.service"
     unit.parent.mkdir(parents=True, exist_ok=True)
@@ -969,8 +1088,10 @@ def install_local() -> None:
         shutil.copy2(SHARE / "integrations" / "omp" / "herd.ts", omp_ext / "muster-herd.ts")
     mod = ""
     if HERDR_MODS.is_dir():
-        copytree(SHARE / "mods" / "muster-pane", HERDR_MODS / "muster-pane")
-        mod = f"\n  herdr mod: {HERDR_MODS / 'muster-pane'} (set it as your layout's pane header to see roles)"
+        for name in ("muster-pane", "muster"):
+            copytree(SHARE / "mods" / name, HERDR_MODS / name)
+        mod = (f"\n  herdr mods: muster-pane (pane header with roles and the spec link) and muster (sidebar panel: herds and queue);"
+               f" add them to your layout, see the README")
     svc = install_service()
     agents = ", ".join(f"{r}={cfg['roles'][r]['command']}" for r in ROLES)
     print(f"muster installed\n  cli: {BIN}\n  config: {CFG_FILE} ({agents})\n  templates: {TEMPLATES}/muster-*.md"
@@ -979,7 +1100,8 @@ def install_local() -> None:
 
 def install_remote(machine: str) -> None:
     dest = ".local/share/muster-src"
-    files = [p for p in REPO.rglob("*") if p.is_file() and ".git" not in p.parts]
+    needed = ("bin", "roles", "integrations", "mods", "skill")  # not docs/ or images: the install never reads them
+    files = [p for p in REPO.rglob("*") if p.is_file() and p.relative_to(REPO).parts[0] in needed]
     for p in files:
         rel = p.relative_to(REPO)
         r = subprocess.run(["hc", "file", "write", "--on", machine, f"{dest}/{rel}"], input=p.read_bytes(), capture_output=True)
@@ -1021,7 +1143,12 @@ def main() -> None:
     elif cmd == "herd" and len(a) == 2:
         print(herd(Path(a[1])))
     elif cmd == "start" and len(a) == 2:
-        print(start(Path(a[1])))
+        print(enqueue_or_start(Path(a[1])))
+    elif cmd == "ls":
+        if "--on" in a:
+            sys.exit(subprocess.run(["hc", "exec", "--on", a[a.index("--on") + 1], "--", "muster", "ls",
+                                     *(["--json"] if "--json" in a else [])]).returncode)
+        ls(as_json="--json" in a)
     elif cmd == "resume" and len(a) == 2:
         print(resume(Path(a[1])))
     elif cmd == "watch":

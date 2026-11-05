@@ -18,7 +18,7 @@ Plan → build → verify, with a separate agent per role, each in its own Herdr
    - sets Status to `In progress (muster)`;
    - starts Herder, a hidden script that drives the gates;
    - moves your pane into a new Herdr space named after the spec folder. Your pane sits top-left, Plotter top-right, Tinker and Nitpick below.
-4. Tell the user it's running, then end your turn. Don't build or verify it yourself, and never start the role agents yourself.
+4. `muster herd` prints `started …` or `queued #N` (when `max_herds` herds are already running). Tell the user which; a queued herd starts by itself, and your pane joins its space then. `muster ls` shows every herd, its stage and the queue. Then end your turn. Don't build or verify it yourself, and never start the role agents yourself.
 5. Herder messages you once at the end, as input tagged `<hc from="… <id>-herder">`:
    - `Muster: … SIGNED OFF`: the role panes have closed. Read VERDICT.md and IMPL.md and give the user a short summary: what changed (files), how it was verified, and any caveats Nitpick noted.
    - `Muster: … ESCALATED`: Nitpick still rejects after 3 rounds. Read VERDICT.md, explain what's failing, and help the user steer Tinker (`hc send <id>-tinker "…"`) or Plotter. When it's resolved, run `muster resume <spec dir>`.
