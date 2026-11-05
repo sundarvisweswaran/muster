@@ -145,10 +145,12 @@ or `**Status:** Herd`, or `Status: Herd`. Repo names resolve to `<spec root>/../
 
 Optional, per machine. With a `[scribe]` section in `config.toml`, the watcher starts **Scribe** (an agent with your Linear MCP tools) every `every` seconds. Scribe:
 
-- finds open tickets in `team` that carry `label` and don't have a spec yet (no `<spec root>/<ID>-*` folder). It reads each one, its comments and the code in `repos`, then writes `spec.md` (Status `Ready`, a Repos row, numbered requirements, a verification plan; following your spec-driven-development skill if you have one) and a draft `PLAN.md`. It comments the spec path and a summary on the ticket, at most `max_per_check` tickets per run;
-- syncs later: when you mark a draft `Herd`, it moves the ticket to In Progress; when it ships, it comments the PR link.
+- finds open tickets in `team` that carry `label` and don't have a spec yet (no `<spec root>/<ID>-*` folder). It reads each one, its comments and the code in `repos`, then writes `spec.md` (Status `Ready`, or `Herd` with `auto_herd`; a Repos row, numbered requirements, a verification plan; following your spec-driven-development skill if you have one) and a draft `PLAN.md`. It comments the spec path and a summary on the ticket, at most `max_per_check` tickets per run;
+- syncs later: when you mark a draft `Herd`, it moves the ticket to In Progress; when it ships, it comments the PR link; if it fails, it comments why.
 
-Drafts show in the board's **Inbox** column and as "N to review" in the sidebar panel. Nothing builds until you set Status to `Herd` or use `/herd`. `muster intake` runs a check now.
+By default, drafts show in the board's **Inbox** column and as "N to review" in the sidebar panel, and nothing builds until you set Status to `Herd` or use `/herd`.
+
+**`auto_herd = true`** makes the label the approval: a ticket is already a defined bug or feature. Scribe writes the spec with Status `Herd`, so the herd starts right away (Plotter reviews the draft plan, Tinker builds, Nitpick verifies, then the PR opens and is watched until green). With nobody reviewing first, Scribe settles open questions itself with the conservative answer, records them under *Assumptions (decided by Scribe)*, lists them in its Linear comment, and moves the ticket to In Progress. You still review and merge the PR; `max_herds` still applies, so extra tickets queue. `muster intake` runs a check now.
 
 ```toml
 [scribe]

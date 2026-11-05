@@ -78,6 +78,7 @@ command = "omp"                 # e.g. "codex --model gpt-5" to have another mod
 # label = "muster"
 # every = 900
 # max_per_check = 3
+# auto_herd = true             # the label is the approval: start each drafted spec's herd immediately
 # repos = ["academia-electron", "academia-app", "academia-browser-extensions"]
 """
 
@@ -578,8 +579,10 @@ def scribe_check(cfg: dict) -> str:
         subprocess.run(["hc", "rm", t["address"]], capture_output=True)
     root = spec_roots(cfg)[0]
     repos = ", ".join(str(root.parent / r) for r in sc.get("repos", [])) or f"the git checkouts in {root.parent}"
+    mode = ("Auto-herd: yes. The label is the approval: start each new spec (Status `Herd`) right away."
+            if sc.get("auto_herd") else "Auto-herd: no. Leave new specs at Status `Ready` for the user to approve.")
     task = (f"CHECK {time.strftime('%Y-%m-%d %H:%M')}: Linear team {sc['team']}, label `{sc['label']}`, spec root {root}, "
-            f"repos {repos}. Draft at most {int(sc.get('max_per_check', 3))} new ticket(s) this check.")
+            f"repos {repos}. Draft at most {int(sc.get('max_per_check', 3))} new ticket(s) this check. {mode}")
     out = hc("run", "--bg", "--no-parent", "--name", f"muster-scribe-{time.strftime('%H%M%S')}", "--cwd", str(root.parent),
              "--label", "muster.role=scribe", "muster-scribe", task)
     show_scribe(out.get("address", ""), root.parent)
