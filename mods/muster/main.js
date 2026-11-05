@@ -70,6 +70,46 @@ export default class Muster extends View {
       .child(div().flex_none().text_size(11).text_color(t.dim).child(h.stage));
   }
 
+  scribeRow(t, machine, s, multi) {
+    const id = (machine ? `${machine}/` : "") + s.space;
+    const working = s.status === "working";
+    return h_flex()
+      .id(`mu-scribe-${id}`)
+      .h(26)
+      .px(8)
+      .gap(8)
+      .flex_none()
+      .items_center()
+      .rounded(8)
+      .text_size(12.5)
+      .cursor_pointer()
+      .hover((st) => st.bg(t.hover))
+      .on_click(() => run("space.select", { id }))
+      .tooltip(working ? "Scribe is checking Linear and drafting specs" : "Scribe finished its last check; the next one starts on schedule")
+      .child(working
+        ? svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)
+        : div().size(7).mx(2).flex_none().rounded(4).border(1.5).border_color(t.dim))
+      .child(div().flex_1().min_w(0).truncate().text_color(working ? t.foreground : t.muted).child("Scribe"))
+      .when(multi && Boolean(machine), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(machine)))
+      .child(div().flex_none().text_size(11).text_color(t.dim).child(working ? "Drafting" : "Idle"));
+  }
+
+  inboxRow(t, machine, i, multi) {
+    return h_flex()
+      .id(`mu-i-${machine}-${i.name}`)
+      .h(26)
+      .px(8)
+      .gap(8)
+      .flex_none()
+      .items_center()
+      .text_size(12.5)
+      .tooltip(`${i.ticket ?? i.name}: drafted by Scribe. Review ${i.spec}/spec.md, then set its Status to Herd (or /herd) to build it.`)
+      .child(div().size(7).mx(2).flex_none().rounded(4).bg(t.accent))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(i.name))
+      .when(multi && Boolean(machine), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(machine)))
+      .child(div().flex_none().text_size(11).text_color(t.dim).child("To review"));
+  }
+
   queueRow(t, machine, q, multi) {
     return h_flex()
       .id(`mu-q-${machine}-${q.name}`)
@@ -102,6 +142,8 @@ export default class Muster extends View {
       drafts += (d.inbox ?? []).length;
       for (const h of d.herds) rows.push(this.herdRow(t, machine, h, multi));
       for (const q of d.queue) rows.push(this.queueRow(t, machine, q, multi));
+      for (const s of d.scribe ?? []) rows.push(this.scribeRow(t, machine, s, multi));
+      for (const i of d.inbox ?? []) rows.push(this.inboxRow(t, machine, i, multi));
     }
     return v_flex()
       .size_full()
@@ -133,7 +175,7 @@ export default class Muster extends View {
               .child("Board ↗")))
           .child(div().id("mu-count").text_size(11).text_color(t.dim)
             .tooltip(`Herds running / max_herds, per machine: ${caps.join(", ")}`)
-            .child(entries.length ? `${running} running${queued ? ` · ${queued} queued` : ""}${drafts ? ` · ${drafts} to review` : ""}` : "")),
+            .child(entries.length ? [running && `${running} running`, queued && `${queued} queued`].filter(Boolean).join(" · ") : "")),
       )
       .when(rows.length === 0, (el) =>
         el.child(div().px(16).text_size(12).text_color(t.dim).child(entries.length

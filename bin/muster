@@ -235,7 +235,8 @@ def live_terminals(**labels: str) -> list[dict]:
     """Live terminals carrying all these labels, with full details (labels, created_ms, status) from `hc get`.
     `hc ls` filters by label itself but doesn't return labels."""
     args = [x for k, v in labels.items() for x in ("--label", f"{k}={v}")]
-    found = [t for t in hc("ls", *args).get("terminals", []) if t.get("state") == "live"]
+    # `hc ls` also lists connected machines' terminals ("yolo/t3z"); each machine reports only its own.
+    found = [t for t in hc("ls", *args).get("terminals", []) if t.get("state") == "live" and "/" not in t["address"]]
     full = []
     for t in found:
         g = hc("get", t["address"], check=False) or t
@@ -484,7 +485,20 @@ def scribe_check(cfg: dict) -> str:
             f"repos {repos}. Draft at most {int(sc.get('max_per_check', 3))} new ticket(s) this check.")
     out = hc("run", "--bg", "--no-parent", "--name", "muster-scribe", "--cwd", str(root.parent),
              "--label", "muster.role=scribe", "muster-scribe", task)
+    show_scribe(out.get("address", ""), root.parent)
     return f"started {out.get('address', '?')}"
+
+
+def show_scribe(addr: str, code_root: Path) -> None:
+    """Put Scribe in its own Herdr space, `muster-scribe`, so you can watch it work."""
+    if not addr:
+        return
+    d = code_root / "muster-scribe"  # names the space; no folder is created
+    subprocess.run(["hc", "label", addr, f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d)}"], capture_output=True)
+    try:
+        write_layout(d, str(code_root), {"origin": addr})
+    except Exception:  # noqa: BLE001 - visibility is cosmetic; the check runs either way
+        pass
 
 
 def ls_data() -> dict:
@@ -532,7 +546,10 @@ def ls_data() -> dict:
     inbox.sort(key=lambda r: r["age_min"])
     return {"max_herds": int(cfg.get("max_herds", 2)), "running": len([h for h in herds if not h["pr"]]),
             "herds": sorted(herds, key=lambda h: (h["pr"], -h["age_min"])), "queue": queue, "recent": recent[:20],
-            "inbox": inbox}
+            "inbox": inbox, "scribe": [{"address": t["address"], "status": t.get("status") or "idle",
+                                        "space": space_id(spec_roots(cfg)[0].parent / "muster-scribe"),
+                                        "age_min": int((time.time() * 1000 - (t.get("created_ms") or time.time() * 1000)) / 60000)}
+                                       for t in live_terminals(**{"muster.role": "scribe"})]}
 
 
 def ls(as_json: bool = False) -> None:
