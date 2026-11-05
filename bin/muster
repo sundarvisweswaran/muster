@@ -1305,7 +1305,7 @@ def install_local() -> None:
         sys.exit("muster needs herdr-core's `hc` on PATH: https://herdr.dev/download/")
     SHARE.mkdir(parents=True, exist_ok=True)
     if (REPO / "roles").is_dir() and REPO != SHARE:  # run from a repo checkout; the installed copy re-uses SHARE
-        for sub in ("roles", "integrations", "mods", "skill"):
+        for sub in ("roles", "integrations", "mods", "skill", "themes"):
             copytree(REPO / sub, SHARE / sub)
         BIN.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(Path(__file__).resolve(), BIN)
@@ -1329,10 +1329,14 @@ def install_local() -> None:
     if (HOME / ".omp" / "agent").is_dir():  # `/herd` for your own omp sessions (role agents skip it)
         omp_ext.mkdir(exist_ok=True)
         shutil.copy2(SHARE / "integrations" / "omp" / "herd.ts", omp_ext / "muster-herd.ts")
+        (HOME / ".omp" / "agent" / "themes").mkdir(exist_ok=True)  # omp's matching theme: `omp config set theme.dark muster`
+        shutil.copy2(SHARE / "integrations" / "omp" / "theme.json", HOME / ".omp" / "agent" / "themes" / "muster.json")
     mod = ""
     if HERDR_MODS.is_dir():
         for name in ("muster-pane", "muster", "muster-board"):
             copytree(SHARE / "mods" / name, HERDR_MODS / name)
+        (HERDR_MODS.parent / "themes").mkdir(exist_ok=True)  # Herdr's theme: Settings → Look, or "theme": "muster"
+        shutil.copy2(SHARE / "themes" / "muster.json", HERDR_MODS.parent / "themes" / "muster.json")
         mod = (f"\n  herdr mods: muster-pane (pane header with roles and the spec link) and muster (sidebar panel: herds and queue);"
                f" add them to your layout, see the README")
     svc = install_service()
@@ -1343,7 +1347,7 @@ def install_local() -> None:
 
 def install_remote(machine: str) -> None:
     dest = ".local/share/muster-src"
-    needed = ("bin", "roles", "integrations", "mods", "skill")  # not docs/ or images: the install never reads them
+    needed = ("bin", "roles", "integrations", "mods", "skill", "themes")  # not docs/ or images: the install never reads them
     files = [p for p in REPO.rglob("*") if p.is_file() and p.relative_to(REPO).parts[0] in needed]
     for p in files:
         rel = p.relative_to(REPO)
