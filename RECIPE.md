@@ -9,6 +9,7 @@ Plan → build → verify for one spec, with a separate coding agent for each st
 - A 30px bar across the top of each pane, in the theme's `background` with a 1px `border` line underneath, 10px horizontal padding, 8px gaps, 12px text.
 - From left to right:
   - the program's 14px icon (dim);
+  - for a herd pane, a role color from the theme's ANSI palette (You: ansi6, Plotter: ansi5, Tinker: ansi3, Nitpick: ansi2, Herder and Scribe: ansi4): the header gets a wash of it (20% alpha), a 4px stripe on its left edge, a 2px bottom border in it, and a solid pill with the role name (dark text, bold, 19px tall, radius 5). "You" is the agent that started the herd: a terminal with `muster.spec` but no `muster.role`;
   - the label: for a Muster terminal, its role (`Herder`, `Plotter`, `Tinker`, `Nitpick`), then ` · `, then the program name (`Plotter · omp`); if the role and program names match (the Herder script reports `herder`), just the role. For other panes, the shipped header's label: the agent's or shell's program name, else the terminal title, else `shell`. Medium weight, foreground color, truncated at 260px.
   - the pane's folder (dim, `~` for home, truncated, takes the remaining width);
   - for a herd pane (and the agent that started the herd), a spec link: a 12px file icon and `<spec folder>/spec.md`, underlined in the theme's `accent`, 20px tall with 6px padding, truncated at 220px;

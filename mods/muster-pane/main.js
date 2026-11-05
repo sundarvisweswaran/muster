@@ -10,7 +10,9 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, props, run, theme, home, terminals } from "herdr";
 
-const ROLES = { herder: "Herder", plotter: "Plotter", tinker: "Tinker", nitpick: "Nitpick" };
+const ROLES = { herder: "Herder", plotter: "Plotter", tinker: "Tinker", nitpick: "Nitpick", scribe: "Scribe" };
+// Each role's color, from the theme's ANSI palette so it follows any theme. "you": the agent that started the herd.
+const ROLE_COLOR = { you: "ansi6", plotter: "ansi5", tinker: "ansi3", nitpick: "ansi2", herder: "ansi4", scribe: "ansi4" };
 
 function terminalOf(address) {
   if (!address) return null;
@@ -69,8 +71,10 @@ export default class Pane extends View {
     if (!p) return div();
     const program = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
     const term = terminalOf(p.terminal);
-    const role = ROLES[term?.labels?.["muster.role"]] ?? null;
-    const name = role && role.toLowerCase() !== program ? `${role} · ${program}` : role ?? program;
+    const key = term?.labels?.["muster.role"] || (term?.labels?.["muster.spec"] ? "you" : null);
+    const role = key === "you" ? "You" : ROLES[key] ?? null;
+    const color = key ? t[ROLE_COLOR[key]] ?? t.accent : null;
+    const name = program; // the role, if any, gets its own colored label before it
     const spec = specOf(term);
     const pic = icon(p.program, 14, t.dim);
     const st = p.status;
@@ -78,17 +82,22 @@ export default class Pane extends View {
     return h_flex()
       .id(`pane-head-${pane}`)
       .size_full()
-      .px(10)
+      .pl(0)
+      .pr(10)
       .gap(8)
       .items_center()
       .bg(t.background)
-      .border_b(1)
-      .border_color(t.border)
+      .when(Boolean(color), (el) => el.bg(color + "33")) // a wash of the role's color across the header
+      .border_b(color ? 2 : 1)
+      .border_color(color ?? t.border)
       .text_size(12)
       .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
       .on_click(() => run("pane.focus", { pane }))
+      .child(color ? div().w(4).h_full().flex_none().bg(color) : div().w(2).flex_none())
       .when(Boolean(pic), (el) => el.child(pic))
-      .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
+      .when(Boolean(role), (el) => el.child(div().flex_none().px(7).h(19).flex().items_center().rounded(5).bg(color)
+        .text_size(11.5).font_bold().text_color(t.background).child(role)))
+      .child(div().flex_none().truncate().max_w(260).font_medium().text_color(role ? t.muted : t.foreground).child(name))
       .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
       .when(Boolean(spec), el => el.child(h_flex()
         .id(`ph-spec-${pane}`)
