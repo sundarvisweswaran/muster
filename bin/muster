@@ -122,14 +122,16 @@ def agent_name(command: str) -> str:
     return Path(shlex.split(command)[0]).name
 
 
-def agent_command(command: str, writable: list[Path]) -> str:
+def agent_command(command: str, writable: list[Path], role: str = "") -> str:
     """Per-agent adjustments so an agent can run unattended under hc. `writable`: the spec roots, which
-    sit outside the repo the agent starts in but must be writable (PLAN.md, IMPL.md, VERDICT.md)."""
+    sit outside the repo the agent starts in but must be writable (PLAN.md, IMPL.md, VERDICT.md).
+    omp roles get their own overlay, which picks the role's colored theme (see role_themes)."""
     name = agent_name(command)
     args = set(shlex.split(command))
     dirs = "".join(f" --add-dir {shlex.quote(str(p))}" for p in writable)
     if name == "omp":
-        command += f" --config {shlex.quote(str(CFG_DIR / 'omp' / 'overlay.yml'))} -e {shlex.quote(str(CFG_DIR / 'omp' / 'title.ts'))}"
+        overlay = CFG_DIR / "omp" / (f"overlay-{role}.yml" if role in ROLE_COLORS else "overlay.yml")
+        command += f" --config {shlex.quote(str(overlay))} -e {shlex.quote(str(CFG_DIR / 'omp' / 'title.ts'))}"
     elif name == "claude":
         command += dirs
     elif name == "codex":
@@ -1241,7 +1243,7 @@ def write_templates(cfg: dict) -> None:
     for role, prompt, name in [*((r, r, f"muster-{r}") for r in (*ROLES, "scribe")),
                                *((r, f"pr-{r}", f"muster-pr-{r}") for r in ("tinker", "nitpick"))]:
         rc = cfg["roles"][role]
-        cmd = agent_command(rc["command"], spec_roots(cfg))
+        cmd = agent_command(rc["command"], spec_roots(cfg), role)
         ready = rc.get("ready") or ("" if agent_name(rc["command"]) in REPORTING else "quiet")
         what = BLURB[role] if prompt == role else ("fixes PR failures and review comments" if role == "tinker" else "checks each PR fix before it's pushed")
         head = [f"description: Muster {TITLES[role]}: {what}.",
@@ -1249,6 +1251,38 @@ def write_templates(cfg: dict) -> None:
         head += [f"ready: {ready}"] if ready else []
         head += [f"{k}: {rc[k]}" for k in ("submit", "stop", "paste_gap_ms") if k in rc]
         (TEMPLATES / f"{name}.md").write_text("---\n" + "\n".join(head) + "\n---\n" + role_prompt(prompt))
+
+
+# Each role's color, matching its pane header in the muster-pane mod (the muster theme's ANSI colors).
+ROLE_COLORS = {"plotter": "#8b7bff", "tinker": "#ffc861", "nitpick": "#5be0a8", "scribe": "#7aa2ff"}
+
+
+def role_themes() -> None:
+    """omp themes muster-<role>: the muster theme with the role's color on the input border, accents, headings
+    and status line, and tool/message blocks faintly tinted with it, so each pane's body reads as its role.
+    Plus overlay-<role>.yml, which is the shared overlay with that theme selected."""
+    base = json.loads((SHARE / "integrations" / "omp" / "theme.json").read_text())
+    themes = HOME / ".omp" / "agent" / "themes"
+    themes.mkdir(parents=True, exist_ok=True)
+    pane = base["vars"]["pane"]
+
+    def mix(c: str, amount: float) -> str:
+        a, b = (tuple(int(x[i:i + 2], 16) for i in (1, 3, 5)) for x in (c, pane))
+        return "#" + "".join(f"{round(p * amount + q * (1 - amount)):02x}" for p, q in zip(a, b))
+
+    overlay = (CFG_DIR / "omp" / "overlay.yml").read_text()
+    for role, c in ROLE_COLORS.items():
+        t = json.loads(json.dumps(base))
+        t["name"] = f"muster-{role}"
+        t["colors"].update({k: c for k in (
+            "accent", "borderAccent", "customMessageLabel", "mdHeading", "mdListBullet", "mdQuoteBorder", "statusLineModel",
+            "thinkingOff", "thinkingMinimal", "thinkingLow", "thinkingMedium", "thinkingHigh", "thinkingXhigh", "thinkingMax")})
+        t["colors"].update({"border": mix(c, 0.45), "borderMuted": mix(c, 0.3), "mdCodeBlockBorder": mix(c, 0.45),
+                            "userMessageBg": mix(c, 0.16), "customMessageBg": mix(c, 0.12), "selectedBg": mix(c, 0.25),
+                            "toolPendingBg": mix(c, 0.07), "toolSuccessBg": mix(c, 0.07), "statusLineSep": mix(c, 0.45)})
+        (themes / f"muster-{role}.json").write_text(json.dumps(t, indent=1) + "\n")
+        (CFG_DIR / "omp" / f"overlay-{role}.yml").write_text(  # sessionAccent off: else the border takes a per-session hue
+            overlay + f"theme:\n  dark: muster-{role}\n  light: muster-{role}\nstatusLine:\n  sessionAccent: false\n")
 
 
 def install_service() -> str:
@@ -1318,6 +1352,7 @@ def install_local() -> None:
     if not CFG_FILE.exists():
         CFG_FILE.write_text(DEFAULT_CONFIG)
     copytree(SHARE / "integrations" / "omp", CFG_DIR / "omp")
+    role_themes()
     cfg = config()
     write_templates(cfg)
     for root in spec_roots(cfg):
