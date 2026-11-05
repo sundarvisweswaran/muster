@@ -78,7 +78,7 @@ Read this before you install it:
 
 - **The `muster` CLI**, at `~/.local/bin/muster`, plus its files in `~/.local/share/muster` and your config in `~/.config/muster/config.toml`.
 - **A background watcher on each machine.** It's a launchd user agent `dev.herdr.muster` on macOS, or a `systemd --user` unit `muster.service` on Linux. It checks your spec roots every 5 s and starts a herd when a spec's Status says `Herd`. Nothing else triggers it.
-- **Agents that run without permission prompts.** Each herd starts three coding agents through herdr-core (`hc run`), using the herdr-core templates `muster-{plotter,tinker,nitpick}` in `~/.config/herdr-core/templates/`. They can run any command in the repos the spec names, and they write `PLAN.md`, `IMPL.md` and `VERDICT.md` next to the spec. Tinker edits your checkout directly; there's no separate worktree, and nothing is committed unless the plan says so. Muster adds these flags:
+- **Agents that run without permission prompts.** Each herd starts three coding agents through herdr-core (`hc run`), using the herdr-core templates `muster-{plotter,tinker,nitpick}` in `~/.config/herdr-core/templates/`. They can run any command in the repos the spec names, and they write `PLAN.md`, `IMPL.md` and `VERDICT.md` next to the spec. Each herd works in its own git worktree (`~/code/.muster-worktrees/<repo>-<spec>`), on a new branch `muster/<spec>` cut from your repo's current commit. Tinker commits there and never pushes. Your checkout is never touched, and uncommitted changes in it aren't included; your agent is told when that happens. Bring the work in with `git merge muster/<spec>`, or open a PR from that branch. Muster adds these flags:
   - omp: a settings overlay with no startup plan mode and `approvalMode: yolo`, plus a title extension;
   - Codex: `--sandbox workspace-write --ask-for-approval never`, unless you set a policy yourself;
   - Codex and Claude: the spec roots, passed with `--add-dir`.
@@ -129,6 +129,7 @@ or `**Status:** Herd`, or `Status: Herd`. Repo names resolve to `<spec root>/../
 
 - **From your agent:** `muster herd <spec dir>`. The skill makes this the default, and the agent asks before herding. Your agent's pane joins the herd's space and gets the outcome.
 - **From omp's plan mode: `/herd`.** When the plan review opens, press Esc instead of approving, then type `/herd` (or `/herd <spec dir>`). It leaves plan mode without running the plan, and your agent turns its plan into the spec's draft `PLAN.md` (creating the spec if there isn't one yet). Then it runs `muster herd`. Approving the plan still means "build it here"; `/herd` means "hand it to the herd". `muster install` adds the command to omp as `~/.omp/agent/extensions/muster-herd.ts`.
+- **Several at once:** each herd has its own worktree and branch, so herds on the same repo run in parallel without colliding.
 - **Hands-off:** set the spec's Status to `Herd` in any editor. The watcher starts it within ~5 s. There's no origin pane; the space closes once it's signed off.
 - **By hand:** `muster start <spec dir>`. Same as hands-off, without touching Status.
 - If a herd escalates, Nitpick still rejects after 3 rounds and everything stays up. Steer Tinker or Plotter in their panes, then run `muster resume <spec dir>`.

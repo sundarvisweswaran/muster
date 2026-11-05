@@ -469,8 +469,54 @@ class Herder:
         self.stop_peers()
         self.layout(remove=not self.origin)
 
+    def prepare_worktrees(self) -> str:
+        """Give the herd its own worktree per repo, on branch muster/<id> from that repo's HEAD, so parallel
+        herds never collide and the user's checkout is never touched. Reused if the herd restarts.
+        Returns the repos text for the agents' tasks."""
+        if not self.repos:
+            return "not resolved from the spec's Repos row; find the checkouts (usually under ~/code)"
+        meta_path = self.d / ".muster-herd.json"
+        meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
+        self.branch = meta.get("branch") or f"muster/{self.id}"
+        trees: dict[str, dict] = meta.get("worktrees", {})
+        dirty: list[str] = []
+        for repo in self.repos:
+            t = trees.get(str(repo))
+            if t and (Path(t["path"]) / ".git").exists():
+                continue
+            wt = repo.parent / ".muster-worktrees" / f"{repo.name}-{self.id}"
+            base = git(repo, "rev-parse", "HEAD")
+            if git(repo, "status", "--porcelain"):
+                dirty.append(repo.name)
+            has_branch = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"refs/heads/{self.branch}"],
+                                        capture_output=True).returncode == 0
+            git(repo, "worktree", "add", *([str(wt), self.branch] if has_branch else ["-b", self.branch, str(wt), base]))
+            trees[str(repo)] = {"path": str(wt), "base": base}
+            self.log(f"worktree {wt} on {self.branch} from {base[:8]}")
+        meta_path.write_text(json.dumps({"branch": self.branch, "worktrees": trees}, indent=2) + "\n")
+        self.trees = trees
+        self.cwd = Path(trees[str(self.repos[0])]["path"])
+        if dirty:
+            self.tell_origin(f"Muster: heads-up, {', '.join(dirty)} had uncommitted changes. The herd works in its own worktree from the last commit, "
+                             f"so those changes aren't in it.")
+        parts = [f"{t['path']} (base {t['base'][:12]}, original checkout {orig}: don't touch it)" for orig, t in trees.items()]
+        return (f"{'; '.join(parts)}. This herd works only in these worktrees, on branch {self.branch}. "
+                "PLAN.md's Repos must list these worktree paths")
+
+    def commit_leftovers(self) -> list[str]:
+        """At sign-off: commit anything Tinker left uncommitted; return 'path @ sha' per worktree."""
+        out = []
+        for t in getattr(self, "trees", {}).values():
+            wt = Path(t["path"])
+            if git(wt, "status", "--porcelain"):
+                git(wt, "add", "-A")
+                git(wt, "-c", "user.name=Muster", "-c", "user.email=muster@localhost", "commit", "-q", "-m",
+                    f"muster({self.id}): leftovers at sign-off")
+            out.append(f"{wt} @ {git(wt, 'rev-parse', '--short', 'HEAD')}")
+        return out
+
     def run(self) -> None:
-        repos = ", ".join(map(str, self.repos)) or "not resolved from the spec's Repos row; find the checkouts (usually under ~/code)"
+        repos = self.prepare_worktrees()
         common = f"Spec dir: {self.d}. Herder: {self.me}. Repos: {repos}."
         self.log(f"herd {self.id}: spec {self.sf}")
         self.log(f"repos: {repos}; origin: {self.origin or 'none'}")
@@ -505,9 +551,12 @@ class Herder:
                     continue
                 self.set_spec_status("Implemented (muster signed off; see VERDICT.md)")
                 self.log("SIGNED OFF")
+                done = self.commit_leftovers()
                 self.close()
+                where = (f" The work is committed on branch {self.branch}: {'; '.join(done)}. Your checkout wasn't touched; "
+                         f"bring it in with `git merge {self.branch}` (or open a PR from it).") if done else ""
                 self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF. Verdict: {self.d}/VERDICT.md; plan: {self.d}/PLAN.md; "
-                                 f"build notes: {self.d}/IMPL.md. The spec's Status is now Implemented.")
+                                 f"build notes: {self.d}/IMPL.md. The spec's Status is now Implemented.{where}")
                 return
             elif "ESCALATE" in line:
                 escalated = True
