@@ -2,7 +2,7 @@
 // Reads `muster ls --json` on each connected machine every 5 s. Click a herd to open its space.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, machines, run, theme } from "herdr";
+import { exec, machines, run, theme, openOverlay } from "herdr";
 
 const WORKING = new Set(["Starting", "Planning", "Building", "Verifying"]);
 
@@ -117,7 +117,18 @@ export default class Muster extends View {
           .flex_none()
           .items_center()
           .justify_between()
-          .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Muster"))
+          .child(h_flex().gap(8).items_center()
+            .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Muster"))
+            .child(div()
+              .id("mu-board")
+              .px(5)
+              .rounded(4)
+              .text_size(11)
+              .text_color(t.dim)
+              .hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .tooltip("Open the Muster board: every herd by stage, the queue, and what finished recently")
+              .on_click(() => openOverlay({ mod: "muster-board", kind: "window", key: "muster-board", width: 1180, height: 620 }))
+              .child("Board ↗")))
           .child(div().id("mu-count").text_size(11).text_color(t.dim)
             .tooltip(`Herds running / max_herds, per machine: ${caps.join(", ")}`)
             .child(entries.length ? `${running} running${queued ? ` · ${queued} queued` : ""}` : "")),

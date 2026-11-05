@@ -476,8 +476,21 @@ def ls_data() -> dict:
         herds.append({"name": name, "stage": stage, "pr": pr, "needs_you": needs, "age_min": age,
                       "spec": spec, "space": space_id(d)})
     queue = [{"name": d.name, "spec": str(d), "position": i} for i, d in enumerate(queued_specs(cfg), 1)]
+    busy = {h["spec"] for h in herds} | {q["spec"] for q in queue}
+    recent = []
+    for root in spec_roots(cfg):
+        for d in (p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
+            sf = spec_file(d)
+            if not sf or str(d.resolve()) in busy:
+                continue
+            status = get_status(sf.read_text()) or ""
+            age = (time.time() - sf.stat().st_mtime) / 60
+            ran = (d / "muster.log").is_file()  # Muster herded it, not just a spec with a similar status
+            if ran and age < 7 * 24 * 60 and re.match(r"(Implemented|Shipped|In review|Muster failed)", status):
+                recent.append({"name": d.name, "spec": str(d.resolve()), "status": status, "age_min": int(age)})
+    recent.sort(key=lambda r: r["age_min"])
     return {"max_herds": int(cfg.get("max_herds", 2)), "running": len([h for h in herds if not h["pr"]]),
-            "herds": sorted(herds, key=lambda h: (h["pr"], -h["age_min"])), "queue": queue}
+            "herds": sorted(herds, key=lambda h: (h["pr"], -h["age_min"])), "queue": queue, "recent": recent[:20]}
 
 
 def ls(as_json: bool = False) -> None:
@@ -1153,7 +1166,7 @@ def install_local() -> None:
         shutil.copy2(SHARE / "integrations" / "omp" / "herd.ts", omp_ext / "muster-herd.ts")
     mod = ""
     if HERDR_MODS.is_dir():
-        for name in ("muster-pane", "muster"):
+        for name in ("muster-pane", "muster", "muster-board"):
             copytree(SHARE / "mods" / name, HERDR_MODS / name)
         mod = (f"\n  herdr mods: muster-pane (pane header with roles and the spec link) and muster (sidebar panel: herds and queue);"
                f" add them to your layout, see the README")
