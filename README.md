@@ -73,6 +73,7 @@ muster doctor
 `install` refreshes everything and keeps your config, so re-running it is safe. It installs two Herdr mods; add them to your layout (`~/.config/herdr-app/layouts/<layout>.json`):
 
 - **`muster-pane`**, the pane header: each pane names its role and links to the spec. In your layout, change `"header": {"content": {"mod": "pane"}}` to `"mod": "muster-pane"`. Other panes look the same as before.
+- **`muster` theme** (`themes/muster.json`): the midnight-indigo, violet and mint palette from the preview, for your whole Herdr window. Pick it in Settings → Look, or set `"theme": "muster", "appearance": "dark"` in `~/.config/herdr-app/settings.json`.
 - **`muster`**, the sidebar panel: running herds and PR watches on every connected machine, with their stage (a spinner while working, a red "Needs you" when an agent waits for you), and the queue in order. Click a herd to open its space; **Board ↗** opens the Muster board, a window with columns Queued, Planning, Building, Verifying, PR and Done (the last 7 days), across every machine, with red borders on anything escalated, failed or waiting for you. Add a block to your sidebar column, for example after `agents`: `{"id": "muster", "type": "block", "content": {"mod": "muster"}, "size": {"weight": 0.6}, "min": 80}`.
 
 ## What it installs and does
