@@ -1231,7 +1231,7 @@ def install_local() -> None:
     if not shutil.which("hc"):
         sys.exit("muster needs herdr-core's `hc` on PATH: https://herdr.dev/download/")
     SHARE.mkdir(parents=True, exist_ok=True)
-    if REPO != SHARE:
+    if (REPO / "roles").is_dir() and REPO != SHARE:  # run from a repo checkout; the installed copy re-uses SHARE
         for sub in ("roles", "integrations", "mods", "skill"):
             copytree(REPO / sub, SHARE / sub)
         BIN.parent.mkdir(parents=True, exist_ok=True)
