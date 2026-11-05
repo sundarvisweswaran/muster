@@ -158,6 +158,18 @@ max_per_check = 3
 repos = ["academia-electron", "academia-app", "academia-browser-extensions"]
 ```
 
+## Slack: get pinged when an agent needs you
+
+Each machine's watcher can post to Slack when **any** agent in Herdr (yours or Muster's) starts waiting for you: a question with options or a permission (Herdr's "Needs you"). There's one message per question, with the agent, its pane, the machine, and the question and options from its screen. Create a Slack [incoming webhook](https://api.slack.com/messaging/webhooks) that posts to your DMs or a channel, then add it to `~/.config/muster/config.toml` on each machine (never commit it):
+
+```toml
+[notify]
+slack_webhook = "https://hooks.slack.com/services/…"
+machine = "yolo"   # optional: the name shown in messages (default: the hostname)
+```
+
+Then run `muster install` to restart the watcher.
+
 ## Watching a pull request
 
 Tell your agent "watch PR 1234 and get it green" (or run `muster pr <url | owner/repo#N | N>`). Your agent's pane joins a space for the PR, next to Tinker and Nitpick:

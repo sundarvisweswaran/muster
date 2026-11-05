@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -56,6 +57,8 @@ spec_roots = ["~/code/specs"]   # each spec: <root>/<folder>/spec.md (or SPEC.md
 trigger = "Herd"                # a spec's Status value that starts a herd
 # editor = "nvim"               # opens a spec from its pane header; default: $VISUAL/$EDITOR, else nvim/hx/vim/nano/vi
 max_herds = 2                   # herds running at once on this machine; more are queued (PR watches don't count)
+# [notify]
+# slack_webhook = "https://hooks.slack.com/services/..."  # ping Slack when any agent here needs you
 ship = "pr"                     # at sign-off: "pr" pushes muster/<spec>, opens a PR and watches it until green; "branch" keeps it local
 # pr_draft = true               # open shipped PRs as drafts
 
@@ -463,6 +466,7 @@ def watch(interval: float = 5.0) -> None:
           f"max_herds {cfg.get('max_herds', 2)}", flush=True)
     seen: dict[Path, float] = {}
     next_scribe = time.time() + 30  # first intake check shortly after start
+    notified: dict[str, float] = {}  # "address#turn" of blocked agents already posted
     while True:
         for root in spec_roots(cfg):
             for d in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []:
@@ -483,6 +487,10 @@ def watch(interval: float = 5.0) -> None:
             drain_queue(cfg)
         except Exception as e:  # noqa: BLE001 - keep watching; a bad queue entry shouldn't stop the daemon
             print(f"queue: {e}", flush=True)
+        try:
+            notify_blocked(cfg, notified)
+        except Exception as e:  # noqa: BLE001 - notifications are best-effort; never stop the watcher
+            print(f"notify: {e}", flush=True)
         if isinstance(cfg.get("scribe"), dict) and time.time() >= next_scribe:
             next_scribe = time.time() + int(cfg["scribe"].get("every", 900))
             try:
@@ -490,6 +498,54 @@ def watch(interval: float = 5.0) -> None:
             except Exception as e:  # noqa: BLE001 - intake is best-effort; try again next time
                 print(f"scribe: {e}", flush=True)
         time.sleep(interval)
+
+
+# Box drawing, block elements, and private-use icon glyphs (BMP and supplementary planes), none of which read in Slack.
+BOX = re.compile("[\u2500-\u257f\u2580-\u259f\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
+
+
+def screen_tail(addr: str, lines: int = 16, limit: int = 1500) -> str:
+    """The bottom of the agent's screen, cleaned and dedented: where its question and options are."""
+    p = subprocess.run(["hc", "read", addr, "--lines", "0"], capture_output=True, text=True)
+    rows = [re.sub(r" {3,}", "  ", BOX.sub("", r).rstrip()) for r in p.stdout.splitlines()]
+    rows = [r for r in rows if r.strip() and not re.match(r"\s*(Tip:|v\d+\.\d+\.\d+\s*$)", r)][-lines:]
+    indent = min((len(r) - len(r.lstrip()) for r in rows), default=0)
+    return "\n".join(r[indent:] for r in rows)[-limit:]
+
+
+def post_slack(hook: str, text: str) -> None:
+    req = urllib.request.Request(hook, data=json.dumps({"text": text}).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        r.read()
+
+
+def notify_blocked(cfg: dict, sent: dict[str, float]) -> None:
+    """Post to Slack once when any agent on this machine starts waiting for you (Herdr status `blocked`):
+    a question with options, or a permission. A new question in a later turn posts again."""
+    hook = (cfg.get("notify") or {}).get("slack_webhook")
+    if not hook:
+        return
+    machine = (cfg.get("notify") or {}).get("machine") or os.uname().nodename.split(".")[0]
+    blocked = set()
+    for t in hc("ls").get("terminals", []):
+        if t.get("state") != "live" or "/" in t["address"] or t.get("status") != "blocked":
+            continue
+        key = f"{t['address']}#{t.get('turn')}"
+        blocked.add(key)
+        if key in sent:
+            continue
+        sent[key] = time.time()
+        g = hc("get", t["address"], check=False) or {}
+        role = TITLES.get((g.get("labels") or {}).get("muster.role", ""), "")
+        who = f"{role} · {t.get('agent')}" if role else (t.get("agent") or "agent")
+        title = BOX.sub("", g.get("title") or "").strip(" ·>⠀")
+        text = (f":raising_hand: *{who} needs you* in `{t.get('where') or t['address']}` on *{machine}*"
+                + (f"\n_{title}_" if title else "")
+                + f"\n```{screen_tail(t['address'])}```\nAnswer in that pane in Herdr.")
+        post_slack(hook, text)
+        print(f"{time.strftime('%H:%M:%S')} notified slack: {t['address']} ({who})", flush=True)
+    for k in [k for k in sent if k not in blocked]:
+        del sent[k]
 
 
 def scribe_check(cfg: dict) -> str:
