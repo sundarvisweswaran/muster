@@ -548,22 +548,39 @@ def notify_blocked(cfg: dict, sent: dict[str, float]) -> None:
         del sent[k]
 
 
+def is_origin(addr: str, cfg: dict) -> bool:
+    """Whether a terminal is the origin of a herd or PR watch on this machine."""
+    for root in spec_roots(cfg):
+        for f in [*root.glob("*/.muster-origin.json"), *root.glob("prs/*/.muster-origin.json")]:
+            try:
+                if json.loads(f.read_text()).get("terminal") == addr:
+                    return True
+            except (OSError, json.JSONDecodeError):
+                continue
+    return False
+
+
 def scribe_check(cfg: dict) -> str:
-    """Start a fresh Scribe for one intake check, unless one is still working. A Scribe that finished its
-    last check (idle) is closed first, so every check starts with a small context."""
+    """Start a fresh Scribe for one intake check, unless one is still working. A Scribe that only ran its
+    check is closed first, so every check starts with a small context. One the user talked to (more turns
+    than its check, or the origin of a herd) is kept as an ordinary agent: it just stops being Scribe."""
     sc = cfg.get("scribe") or {}
     if not sc.get("team") or not sc.get("label"):
         raise RuntimeError("[scribe] needs team and label in config.toml")
     for t in live_terminals(**{"muster.role": "scribe"}):
         if t.get("status") == "working":
             return f"still working ({t['address']})"
+        if (t.get("turn") or 0) > 1 or is_origin(t["address"], cfg):
+            subprocess.run(["hc", "label", t["address"], "muster.role="], capture_output=True)
+            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} scribe: kept {t['address']} (you talked to it); next check gets a new pane", flush=True)
+            continue
         subprocess.run(["hc", "kill", t["address"]], capture_output=True)
         subprocess.run(["hc", "rm", t["address"]], capture_output=True)
     root = spec_roots(cfg)[0]
     repos = ", ".join(str(root.parent / r) for r in sc.get("repos", [])) or f"the git checkouts in {root.parent}"
     task = (f"CHECK {time.strftime('%Y-%m-%d %H:%M')}: Linear team {sc['team']}, label `{sc['label']}`, spec root {root}, "
             f"repos {repos}. Draft at most {int(sc.get('max_per_check', 3))} new ticket(s) this check.")
-    out = hc("run", "--bg", "--no-parent", "--name", "muster-scribe", "--cwd", str(root.parent),
+    out = hc("run", "--bg", "--no-parent", "--name", f"muster-scribe-{time.strftime('%H%M%S')}", "--cwd", str(root.parent),
              "--label", "muster.role=scribe", "muster-scribe", task)
     show_scribe(out.get("address", ""), root.parent)
     return f"started {out.get('address', '?')}"
