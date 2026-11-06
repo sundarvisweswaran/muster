@@ -31,6 +31,7 @@ Every herd pane's header has a 📄 link to the spec. Click it to open the spec 
 ## Why
 
 - **The checker didn't write the code.** A single agent tends to approve its own work. Nitpick re-runs every acceptance check from scratch.
+- **It looks at the screen.** If a change can alter anything a person sees, Nitpick captures each touched screen before (from the base commit) and after (from the herd's branch), compares the pairs against each other and against the spec and any mockup in it or its ticket, and rejects unintended visual changes. The pairs go into the PR body as a Before | After table. Images live on a separate `muster-screenshots` branch in the same repo, so they never touch the PR's diff. In PR mode, Nitpick does the same for each visual fix, and Tinker adds the pairs to its reply with `muster shots <dir> --repo <checkout>`.
 - **Each role starts with a clean context.** Planning exploration doesn't crowd the build.
 - **Hard gates in files.** The build starts only when `PLAN.md` says `Status: FINAL`, and the work is done only when `VERDICT.md` says `Verdict: SIGNED-OFF`. The plan, implementation notes and verdict stay as an audit trail.
 - **Trigger it and walk away.** It runs in herdr-core, so a herd on a remote box keeps going while your laptop sleeps.
@@ -181,7 +182,7 @@ Tell your agent "watch PR 1234 and get it green" (or run `muster pr <url | owner
   - A review bot that edits a single comment in place counts as new feedback each time that comment's `updated_at` changes.
   - Comments from the `gh` account the agents use are ignored, so their own replies don't start rounds.
 - **Tinker triages every item:** fix, push back, not a defect (an approval gate, a failure the base branch has too, a flaky test), needs a human, or already done. It fixes the real defects and proves each fix with a mutation check. It commits locally and writes `round-N-fix.md`, including the replies it plans to post.
-- **Nitpick checks the round before anything is pushed.** It re-runs the proofs, hunts for the inverse defect each fix might have introduced, and checks the replies are accurate. It approves, or sends the round back (up to 3 times, then it escalates).
+- **Nitpick checks the round before anything is pushed.** It re-runs the proofs, hunts for the inverse defect each fix might have introduced, and checks the replies are accurate. A fix that changes anything visible gets before/after screenshots, compared and posted with the reply. It approves, or sends the round back (up to 3 times, then it escalates).
 - **Tinker pushes to the PR's own branch and replies** on each comment. It never opens another PR, never merges, never force-pushes and never resolves threads.
 - **It keeps watching until the PR is merged or closed** (or after 10 rounds). When the head is green with nothing new, your agent hears it's ready for your merge; a later comment or failed check starts another round. Your agent also gets any items that need you along the way.
 

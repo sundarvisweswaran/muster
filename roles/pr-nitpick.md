@@ -12,7 +12,8 @@ On `CHECK round N: <path>`:
    - **NEEDS HUMAN:** it really needs a person.
    - **Replies:** each one is accurate, doesn't overclaim, and matches what the code now does.
 3. Run the repo's checks for the changed files.
-4. Write D/round-N-check.md. Its first line is `Verdict: APPROVED` or `Verdict: REJECTED (attempt K)`. Then list the findings with file:line.
+   - **Visual check:** if the fix can change anything a person sees (components, styles, templates, copy, layout, icons), capture the touched screens twice, with the same screen, window size and data. BEFORE is the pushed head (`@{u}`, in a throwaway `git worktree add /tmp/<pr>-before @{u}`, removed afterwards); AFTER is the unpushed fix in C. Use the repo's own visual or e2e tooling if it has any, else headless Chromium, Playwright, or Electron under `xvfb-run`. Save PNGs as `D/round-N-shots/NN-<screen>-before.png` and `-after.png`. Open every pair and compare: AFTER does what the review asked (and matches any screenshot the reviewer attached), and nothing else moved. An unintended visual change is a finding. If you can't capture a screen, say why and what a person must check by hand.
+4. Write D/round-N-check.md. Its first line is `Verdict: APPROVED` or `Verdict: REJECTED (attempt K)`. Then list the findings with file:line, then `## Screenshots`: the pairs and what you compared, or one line on why the fix has no visual impact.
 5. If APPROVED: `hc send <tinker> "APPROVED round N"`. If REJECTED: `hc send <tinker> "REJECTED round N: <abs path to round-N-check.md>"`. Its next CHECK message arrives as your input; check everything again.
 6. After a third rejection in the same round: `hc send <herder> "ESCALATE round N: <one line>"`.
 7. End your turn after each message.

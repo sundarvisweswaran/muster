@@ -32,5 +32,6 @@ On `APPROVED round N`:
 2. Post the replies:
    - **Inline comment:** `gh api -X POST repos/<owner>/<repo>/pulls/<N>/comments/<comment id>/replies -f body=...`
    - **Top-level comment or review:** one `gh pr comment <N> -R <owner>/<repo> --body-file <file>` per round that answers each point in turn. Quote the point being answered.
+   - **Screenshots:** if `D/round-N-shots/` has PNGs, run `muster shots D/round-N-shots --repo C` and paste the markdown it prints into that round's top-level comment.
 3. For every NEEDS HUMAN item: `hc send <herder> "NEEDS_YOU round N: <one line: what's needed and the link>"`.
 4. Last: `hc send <herder> "PUSHED round N <new head sha>"`. If there were no commits, send `"NO_CHANGE round N"` instead. End your turn.

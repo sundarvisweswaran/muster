@@ -10,6 +10,8 @@
                                   comments, Nitpick checks each fix, then Tinker pushes and replies;
                                   the calling agent joins the PR's space and gets the outcome
   muster resume <dir>             resume an escalated herd or PR watch
+  muster shots <dir|png> [--repo C]
+                                  upload screenshots to the repo's muster-screenshots branch; print PR markdown
   muster install [--on MACHINE]   install/refresh on this machine (or an hc machine)
   muster doctor                   check this machine's setup
   muster watch                    daemon: start a herd for every spec whose Status is the trigger (Herd)
@@ -28,6 +30,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -700,6 +703,73 @@ def ls(as_json: bool = False) -> None:
         print(f"  {q['name']:<{width}}  {'':>6}  Queued #{q['position']}")
 
 
+
+# ---------- screenshots: Nitpick's before/after PNGs, shown in PRs ----------
+
+SHOTS_BRANCH = "muster-screenshots"  # an orphan branch in the same repo, so images never touch a PR's diff
+
+
+def upload_shots(checkout: Path, files: list[Path], prefix: str) -> dict[Path, str]:
+    """Commit the PNGs to the repo's muster-screenshots branch (git plumbing: no checkout, no working-tree change)
+    and push it. Returns each file's URL, pinned to that commit, which renders in PRs for anyone with access."""
+    if not files:
+        return {}
+    slug = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", git(checkout, "remote", "get-url", "origin"))
+    if not slug:
+        raise RuntimeError(f"{checkout}'s origin isn't on GitHub")
+    for _ in range(3):  # someone else may push the branch at the same time: rebuild on the new tip
+        parent = None
+        if subprocess.run(["git", "-C", str(checkout), "fetch", "-q", "origin", f"+refs/heads/{SHOTS_BRANCH}:refs/muster/{SHOTS_BRANCH}"],
+                          capture_output=True).returncode == 0:
+            parent = git(checkout, "rev-parse", f"refs/muster/{SHOTS_BRANCH}")
+        index = Path(tempfile.mkstemp(prefix="muster-shots-index-")[1])
+        index.unlink()
+        env = {**os.environ, "GIT_INDEX_FILE": str(index), "GIT_AUTHOR_NAME": "Muster", "GIT_AUTHOR_EMAIL": "muster@localhost",
+               "GIT_COMMITTER_NAME": "Muster", "GIT_COMMITTER_EMAIL": "muster@localhost"}
+        run = lambda *a: subprocess.run(["git", "-C", str(checkout), *a], env=env, capture_output=True, text=True, check=True).stdout.strip()  # noqa: E731
+        try:
+            if parent:
+                run("read-tree", parent)
+            paths = {}
+            for f in files:
+                path = f"{prefix}/{f.name}"
+                run("update-index", "--add", "--cacheinfo", f"100644,{run('hash-object', '-w', str(f))},{path}")
+                paths[f] = path
+            commit = run("commit-tree", run("write-tree"), *(["-p", parent] if parent else []), "-m", f"screenshots: {prefix}")
+        finally:
+            index.unlink(missing_ok=True)
+        if subprocess.run(["git", "-C", str(checkout), "push", "-q", "origin", f"{commit}:refs/heads/{SHOTS_BRANCH}"],
+                          capture_output=True).returncode == 0:
+            return {f: f"https://github.com/{slug.group(1)}/blob/{commit}/{path}?raw=true" for f, path in paths.items()}
+    raise RuntimeError(f"couldn't push {SHOTS_BRANCH} to {slug.group(1)}")
+
+
+def shots_markdown(urls: dict[Path, str]) -> str:
+    """`NN-<screen>-before.png` / `-after.png` pairs become a Before | After table; any other PNG is shown on its own."""
+    pairs: dict[str, dict[str, str]] = {}
+    for f, url in sorted(urls.items()):
+        m = re.match(r"(.+?)[-_](before|after)$", f.stem, re.I)
+        pairs.setdefault(m.group(1) if m else f.stem, {})[m.group(2).lower() if m else "only"] = url
+    rows, single = [], []
+    for name, p in pairs.items():
+        label = re.sub(r"^\d+[-_]", "", name).replace("-", " ").replace("_", " ")
+        if "before" in p or "after" in p:
+            img = lambda k: f'<img src="{p[k]}" width="420">' if k in p else "(none)"  # noqa: E731
+            rows.append(f"| {label} | {img('before')} | {img('after')} |")
+        else:
+            single.append(f"**{label}**\n\n![{label}]({p['only']})")
+    table = "\n".join(["| Screen | Before | After |", "|---|---|---|", *rows]) if rows else ""
+    return "\n\n".join([x for x in (table, *single) if x])
+
+
+def shots(target: Path, repo: Path, prefix: str | None = None) -> str:
+    files = sorted(target.glob("*.png")) if target.is_dir() else [target]
+    if not files:
+        raise RuntimeError(f"no PNGs in {target}")
+    prefix = prefix or f"{target.resolve().parent.name}/{target.resolve().name if target.is_dir() else target.stem}-{time.strftime('%Y%m%d-%H%M%S')}"
+    return shots_markdown(upload_shots(repo, files, prefix))
+
+
 # ---------- Herder ----------
 
 class Herder:
@@ -857,11 +927,21 @@ class Herder:
             out.append(f"{wt} @ {git(wt, 'rev-parse', '--short', 'HEAD')}")
         return out
 
-    def pr_body(self) -> str:
+    def pr_body(self, repo: Path | None = None, wt: Path | None = None) -> str:
         spec = self.sf.read_text() if self.sf else ""
+        shots_md = ""
+        root = self.d / "screenshots"
+        folder = root / repo.name if repo and (root / repo.name).is_dir() else root
+        if wt and list(folder.glob("*.png")):
+            try:
+                shots_md = "## Screenshots\n\nCaptured and compared by Nitpick (details in VERDICT.md).\n\n" + shots_markdown(
+                    upload_shots(wt, sorted(folder.glob("*.png")), f"{self.id}/{folder.name}")) + "\n\n"
+            except (RuntimeError, subprocess.CalledProcessError) as e:
+                self.log(f"!! screenshots not uploaded for {repo}: {e}")
+                shots_md = f"## Screenshots\n\nNitpick captured screenshots in `{folder}`, but uploading them failed: {str(e)[:200]}\n\n"
         reqs = re.search(r"^##+ Requirements\s*\n(.*?)(?=^##+ |\Z)", spec, re.M | re.S)
         verdict = (self.d / "VERDICT.md").read_text() if (self.d / "VERDICT.md").is_file() else ""
-        return (f"Spec: `{self.sf}`\n\n## Requirements\n\n{(reqs.group(1).strip() if reqs else '(see the spec)')}\n\n"
+        return (f"Spec: `{self.sf}`\n\n## Requirements\n\n{(reqs.group(1).strip() if reqs else '(see the spec)')}\n\n{shots_md}"
                 f"## Verification\n\nIndependently verified by Muster's Nitpick (`{self.d}/VERDICT.md`):\n\n{verdict.strip()[:50000]}\n\n"
                 f"---\nBuilt by [Muster](https://github.com/sundarvisweswaran/muster): Plotter reviewed the plan, Tinker built it, "
                 f"Nitpick verified it. Plan: `{self.d}/PLAN.md`; build notes: `{self.d}/IMPL.md`.\n")
@@ -897,7 +977,7 @@ class Herder:
                              + ("" if found[0]["baseRefName"] == base else f"  !! expected base {base}"))
                     continue
                 body = self.d / f".pr-body-{Path(repo).name}.md"
-                body.write_text(self.pr_body())
+                body.write_text(self.pr_body(Path(repo), wt))
                 p = subprocess.run(["gh", "pr", "create", "--base", base, "--head", self.branch, "--title", title,
                                     "--body-file", str(body), *draft], cwd=wt, capture_output=True, text=True)
                 if p.returncode != 0:
@@ -1598,6 +1678,9 @@ def main() -> None:
         ls(as_json="--json" in a)
     elif cmd == "resume" and len(a) == 2:
         print(resume(Path(a[1])))
+    elif cmd == "shots" and len(a) >= 2:
+        repo = Path(a[a.index("--repo") + 1]) if "--repo" in a else Path.cwd()
+        print(shots(Path(a[1]), repo))
     elif cmd == "intake":
         print(scribe_check(config()))
     elif cmd == "watch":
