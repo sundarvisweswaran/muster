@@ -20,7 +20,7 @@ Plan → build → verify, with a separate agent per role, each in its own Herdr
    - moves your pane into a new Herdr space named after the spec folder. Your pane sits top-left, Plotter top-right, Tinker and Nitpick below.
 4. `muster herd` prints `started …` or `queued #N` (when `max_herds` herds are already running). Tell the user which; a queued herd starts by itself, and your pane joins its space then. `muster ls` shows every herd, its stage and the queue. Then end your turn. Don't build or verify it yourself, and never start the role agents yourself.
 5. Herder messages you once at the end, as input tagged `<hc from="… <id>-herder">`:
-   - `Muster: … SIGNED OFF and shipped as <PR url>`: Muster opened a PR and now watches it (your pane moves to the PR's space). Tell the user; the PR watch reports again when it's green, merged or needs them.
+   - `Muster: … SIGNED OFF and shipped as <PR url>`: Muster opened a PR. The herd's space stays up (you, Plotter, Tinker, Nitpick), and Tinker and Nitpick handle the PR's checks and review comments until it's merged or closed. Tell the user; Muster reports again when it's green, needs them, or is merged.
    - `Muster: … SIGNED OFF`: the role panes have closed. Read VERDICT.md and IMPL.md and give the user a short summary: what changed (files), how it was verified, and any caveats Nitpick noted.
    - `Muster: … ESCALATED`: Nitpick still rejects after 3 rounds. Read VERDICT.md, explain what's failing, and help the user steer Tinker (`hc send <id>-tinker "…"`) or Plotter. When it's resolved, run `muster resume <spec dir>`.
    - `Muster: … FAILED` or `stuck`: read `<spec dir>/muster.log` and tell the user what broke.

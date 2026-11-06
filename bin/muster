@@ -59,7 +59,7 @@ trigger = "Herd"                # a spec's Status value that starts a herd
 max_herds = 2                   # herds running at once on this machine; more are queued (PR watches don't count)
 # [notify]
 # slack_webhook = "https://hooks.slack.com/services/..."  # ping Slack when any agent here needs you
-ship = "pr"                     # at sign-off: "pr" pushes muster/<spec>, opens a PR and watches it until green; "branch" keeps it local
+ship = "pr"                     # at sign-off: "pr" pushes muster/<spec> and opens a PR; the herd stays up and handles it until merged; "branch" keeps it local
 # pr_draft = true               # open shipped PRs as drafts
 
 [roles.plotter]
