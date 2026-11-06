@@ -400,9 +400,10 @@ QUEUED = "Queued (muster)"
 
 
 def running_herds() -> list[dict]:
-    """Live spec herds (PR watches don't count against max_herds: they mostly wait on CI)."""
+    """Live spec herds. PR watches, including a herd watching the PR it shipped, don't count against max_herds:
+    they mostly wait on CI and reviewers."""
     return [t for t in live_terminals(**{"muster.role": "herder"})
-            if not (Path(t["labels"].get("muster.spec", "/")) / ".muster-pr.json").exists()]
+            if not any((Path(t["labels"].get("muster.spec", "/")) / f).exists() for f in (".muster-pr.json", ".muster-watching.json"))]
 
 
 def queued_specs(cfg: dict) -> list[Path]:
@@ -617,11 +618,19 @@ def ls_data() -> dict:
         roles = {(t.get("labels") or {}).get("muster.role"): t for t in live_terminals(**{"muster.spec": spec})}
         sf = spec_file(d)
         status = (get_status(sf.read_text()) if sf else "") or ""
-        pr = (d / ".muster-pr.json").is_file()
-        if pr:
+        watching = d / ".muster-watching.json"  # a herd watching the PRs it shipped
+        pr = (d / ".muster-pr.json").is_file() or watching.is_file()
+
+        def pr_stage(notes: Path) -> str:
+            meta = json.loads((notes / ".muster-pr.json").read_text())
+            st = json.loads((notes / ".muster-pr-state.json").read_text()) if (notes / ".muster-pr-state.json").is_file() else {}
+            return f"#{meta['number']} " + ("green, awaiting merge" if st.get("green") else f"round {st.get('round', 0)}")
+
+        if watching.is_file():
+            name, stage = d.name, "PR " + ", ".join(pr_stage(Path(n)) for n in json.loads(watching.read_text()))
+        elif pr:
             meta = json.loads((d / ".muster-pr.json").read_text())
-            st = json.loads((d / ".muster-pr-state.json").read_text()) if (d / ".muster-pr-state.json").is_file() else {}
-            name, stage = f"{meta['repo'].split('/')[1]}#{meta['number']}", f"PR watch · round {st.get('round', 0)}"
+            name, stage = f"{meta['repo'].split('/')[1]}#{meta['number']}", "PR watch · " + pr_stage(d)
         else:
             name = d.name
             stage = ("Escalated" if "escalated" in status.lower() else "Verifying" if "nitpick" in roles
@@ -824,7 +833,10 @@ class Herder:
         prs, self.ship_errors = [], []
         title = next((l[2:].strip() for l in (self.sf.read_text() if self.sf else "").splitlines() if l.startswith("# ")), self.d.name)
         draft = ["--draft"] if config().get("pr_draft") else []
+        meta_path = self.d / ".muster-herd.json"  # re-read: a base fixed there during the herd takes effect at sign-off
+        saved = json.loads(meta_path.read_text()).get("worktrees", {}) if meta_path.is_file() else {}
         for repo, t in getattr(self, "trees", {}).items():
+            t = {**t, **saved.get(repo, {})}
             wt, base = Path(t["path"]), t.get("base_branch") or "HEAD"
             try:
                 if git(wt, "rev-list", "--count", f"{t['base']}..HEAD") == "0":
@@ -837,6 +849,14 @@ class Herder:
                     head = subprocess.run(["git", "-C", str(wt), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], capture_output=True, text=True)
                     base = head.stdout.strip().removeprefix("origin/") or "main"
                 git(wt, "push", "-u", "origin", self.branch)
+                existing = subprocess.run(["gh", "pr", "list", "--head", self.branch, "--state", "open", "--json", "url,baseRefName"],
+                                          cwd=wt, capture_output=True, text=True)
+                found = json.loads(existing.stdout or "[]") if existing.returncode == 0 else []
+                if found:  # someone already opened one for this branch: watch it rather than open a duplicate
+                    prs.append({"repo": repo, "url": found[0]["url"]})
+                    self.log(f"ship {repo}: {found[0]['url']} is already open for {self.branch} (base {found[0]['baseRefName']}); using it"
+                             + ("" if found[0]["baseRefName"] == base else f"  !! expected base {base}"))
+                    continue
                 body = self.d / f".pr-body-{Path(repo).name}.md"
                 body.write_text(self.pr_body())
                 p = subprocess.run(["gh", "pr", "create", "--base", base, "--head", self.branch, "--title", title,
@@ -850,6 +870,48 @@ class Herder:
                 self.log(f"!! ship {repo} failed: {e}; the work stays on {self.branch}")
                 self.ship_errors.append(f"{Path(repo).name}: {str(e)[:160]}")
         return prs
+
+    def watch_own_prs(self, prs: list[dict]) -> None:
+        """After shipping, the herd stays: same space, same tab, same agents, so you can keep talking to them.
+        Its Tinker and Nitpick, who built and verified the change, take the PR's failed checks and review comments,
+        and this Herder watches the PRs until they're merged or closed. Then the herd closes."""
+        urls = ", ".join(p["url"] for p in prs)
+        self.set_spec_status(f"In review (muster: {urls})")
+        me_login = (gh("api", "user") or {}).get("login", "")
+        watches: list[PrWatch] = []
+        for p in prs:
+            try:
+                repo, number = parse_pr(p["url"], Path(self.trees[str(p["repo"])]["path"]))
+                d = pr_notes(pr_info(repo, number), repo, Path(self.trees[str(p["repo"])]["path"]), spec=self.d)
+                watches.append(PrWatch(d, me_login))
+            except Exception as e:  # noqa: BLE001 - the PR exists; say which one isn't watched
+                self.log(f"!! couldn't set up the watch for {p['url']}: {e}")
+        if not watches:
+            self.close()
+            self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF and shipped as {urls}, but Muster couldn't watch it: see {self.log_path}.")
+            return
+        (self.d / ".muster-watching.json").write_text(json.dumps([str(w.d) for w in watches]) + "\n")
+        prs_text = "; ".join(f"{w.url} (branch {w.meta['branch']} → {w.meta['base']}, checkout C {w.meta['checkout']}, notes dir D {w.d})"
+                             for w in watches)
+        for role, other in (("tinker", "nitpick"), ("nitpick", "tinker")):
+            brief = self.d / f".pr-mode-{role}.md"
+            brief.write_text(role_prompt(f"pr-{role}") + f"\n\n## This herd's PRs\n\n{prs_text}\n\nHerder: {self.me}. "
+                             f"{TITLES[other]}: {self.name(other)}. Each round file names its PR, C and D.\n")
+            subprocess.run(["hc", "send", self.name(role),
+                            f"SHIPPED: your work is out for review as {urls}. You now handle its failed checks and review comments "
+                            f"in PR mode: read {brief} and follow it from now on (it replaces your build instructions). "
+                            f"You keep everything you know about this change. Wait for a ROUND message."], capture_output=True)
+        self.log(f"shipped {urls}; the herd stays up and watches")
+        self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF and shipped as {urls}. This space stays up: Plotter, Tinker and Nitpick "
+                         f"are still here to talk to, and Tinker and Nitpick now take the PR's failed checks and review comments until "
+                         f"you merge or close it. Muster never merges. Verdict: {self.d}/VERDICT.md.")
+        try:
+            watch_prs(self, watches, self.d)
+        finally:
+            (self.d / ".muster-watching.json").unlink(missing_ok=True)
+        self.close()
+        self.tell_origin(f"Muster: {self.d.name} is done ({get_status(self.sf.read_text()) if self.sf else 'see the spec'}); "
+                         f"its space is closed. Notes: {', '.join(str(w.d / 'PR.md') for w in watches)}.")
 
     def run(self) -> None:
         repos = self.prepare_worktrees()
@@ -889,19 +951,10 @@ class Herder:
                 self.log("SIGNED OFF")
                 done = self.commit_leftovers()
                 prs = self.ship() if config().get("ship", "pr") == "pr" else []
-                self.close()
                 if prs:
-                    self.set_spec_status(f"In review (muster: {', '.join(p['url'] for p in prs)})")
-                    watching = []
-                    for p in prs:
-                        try:
-                            watching.append(pr_start(p["url"], origin=self.origin, spec=self.d))
-                        except Exception as e:  # noqa: BLE001 - the PR exists; report a watch that didn't start
-                            self.log(f"!! couldn't start the PR watch for {p['url']}: {e}")
-                    self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF and shipped as {', '.join(p['url'] for p in prs)}. "
-                                     f"Muster now watches {'it' if len(prs) == 1 else 'them'} until green (your pane moves to the PR's space); "
-                                     f"it never merges. Verdict: {self.d}/VERDICT.md.")
+                    self.watch_own_prs(prs)
                     return
+                self.close()
                 if getattr(self, "ship_errors", None):
                     why = "; ".join(self.ship_errors)
                     self.set_spec_status(f"Signed off, PR not opened ({why[:120]}); work on {self.branch}")
@@ -914,6 +967,9 @@ class Herder:
                 self.tell_origin(f"Muster: {self.d.name} is SIGNED OFF. Verdict: {self.d}/VERDICT.md; plan: {self.d}/PLAN.md; "
                                  f"build notes: {self.d}/IMPL.md. The spec's Status is now Implemented.{where}")
                 return
+            elif "BASE_WRONG" in line:
+                self.tell_origin(f"Muster: {self.d.name}: Plotter thinks a worktree's base branch is wrong: {line[:300]}. "
+                                 f"PRs open against the base in {self.d}/.muster-herd.json; fix it there (and the spec's Repos row) before sign-off.")
             elif "ESCALATE" in line:
                 escalated = True
                 self.set_spec_status("In progress (muster escalated; see VERDICT.md)")
@@ -1000,17 +1056,10 @@ def pr_checkout(repo: str, number: int, branch: str, code_root: Path) -> Path:
     return wt
 
 
-def pr_start(ref: str, origin: str | None = None, spec: Path | None = None) -> str:
-    """`muster pr <ref>` from an agent's terminal: that agent joins the PR's space and gets the outcome."""
-    root = spec_roots(config())[0]
-    repo, number = parse_pr(ref, Path.cwd())
-    info = gh("pr", "view", str(number), "-R", repo, "--json", "number,title,url,headRefName,baseRefName,isCrossRepository,state")
-    if info["state"] != "OPEN":
-        raise RuntimeError(f"{info['url']} is {info['state'].lower()}")
-    if info["isCrossRepository"]:
-        raise RuntimeError(f"{info['url']} comes from a fork; Muster can only push to branches in {repo}")
-    checkout = pr_checkout(repo, number, info["headRefName"], root.parent)
-    d = (root / "prs" / f"{repo.split('/')[1]}-pr{number}").resolve()
+def pr_notes(info: dict, repo: str, checkout: Path, spec: Path | None = None) -> Path:
+    """The PR's notes dir, <spec root>/prs/<repo>-pr<N>: .muster-pr.json, PR.md and the round files."""
+    number = info["number"]
+    d = (spec_roots(config())[0] / "prs" / f"{repo.split('/')[1]}-pr{number}").resolve()
     d.mkdir(parents=True, exist_ok=True)
     meta = {"repo": repo, "number": number, "url": info["url"], "title": info["title"],
             "branch": info["headRefName"], "base": info["baseRefName"], "checkout": str(checkout),
@@ -1020,6 +1069,38 @@ def pr_start(ref: str, origin: str | None = None, spec: Path | None = None) -> s
         (d / "PR.md").write_text(f"# {info['title']}\n\n| | |\n|---|---|\n| **PR** | {info['url']} |\n"
                                  f"| **Branch** | {info['headRefName']} → {info['baseRefName']} |\n"
                                  f"| **Checkout** | {checkout} |\n| **Status** | Watching (muster) |\n\n## Rounds\n")
+    return d
+
+
+def pr_info(repo: str, number: int) -> dict:
+    return gh("pr", "view", str(number), "-R", repo, "--json", "number,title,url,headRefName,baseRefName,isCrossRepository,state")
+
+
+def herd_watching(notes: Path) -> str | None:
+    """The spec dir of a live herd that already watches this PR (its own PR, after shipping), if any."""
+    for t in live_terminals(**{"muster.role": "herder"}):
+        spec = Path(t["labels"].get("muster.spec", "/"))
+        w = spec / ".muster-watching.json"
+        if w.is_file() and str(notes) in json.loads(w.read_text()):
+            return str(spec)
+    return None
+
+
+def pr_start(ref: str, origin: str | None = None, spec: Path | None = None) -> str:
+    """`muster pr <ref>` from an agent's terminal: that agent joins the PR's space and gets the outcome."""
+    root = spec_roots(config())[0]
+    repo, number = parse_pr(ref, Path.cwd())
+    info = pr_info(repo, number)
+    if info["state"] != "OPEN":
+        raise RuntimeError(f"{info['url']} is {info['state'].lower()}")
+    if info["isCrossRepository"]:
+        raise RuntimeError(f"{info['url']} comes from a fork; Muster can only push to branches in {repo}")
+    notes = (root / "prs" / f"{repo.split('/')[1]}-pr{number}").resolve()
+    owner = herd_watching(notes)
+    if owner:
+        return f"already watched by the herd that built it ({owner}); talk to its Tinker in that space"
+    checkout = pr_checkout(repo, number, info["headRefName"], root.parent)
+    d = pr_notes(info, repo, checkout, spec)
     me = origin or os.environ.get("HC_TERMINAL_ID")
     origin = d / ".muster-origin.json"
     if me:
@@ -1034,34 +1115,29 @@ def pr_start(ref: str, origin: str | None = None, spec: Path | None = None) -> s
     return f"watching {info['url']} ({out.get('address', '?')}); checkout {checkout}; notes {d}"
 
 
-class PrHerder(Herder):
-    """Watches one PR. Each round hands new feedback (failed checks, new or edited comments and reviews)
-    to Tinker; Nitpick checks every fix before Tinker pushes and replies. Stops when green and quiet."""
+class PrWatch:
+    """One pull request being watched: its notes dir D (PR.md, round files), the feedback already handled, and
+    its rounds. Green isn't the end: new comments start a new round until the PR is merged or closed."""
 
-    GRID = PR_GRID
-    TEMPLATE = "muster-pr-{role}"
-
-    def __init__(self, d: Path):
-        super().__init__(d)
-        self.meta = json.loads((self.d / ".muster-pr.json").read_text())
-        self.repo, self.number = self.meta["repo"], self.meta["number"]
-        self.cwd = Path(self.meta["checkout"])
-        self.state_path = self.d / ".muster-pr-state.json"
+    def __init__(self, d: Path, me_login: str):
+        self.d = d
+        self.meta = json.loads((d / ".muster-pr.json").read_text())
+        self.repo, self.number, self.url = self.meta["repo"], self.meta["number"], self.meta["url"]
+        self.state_path = d / ".muster-pr-state.json"
         st = json.loads(self.state_path.read_text()) if self.state_path.is_file() else {}
         self.handled: set[str] = set(st.get("handled", []))
         self.round: int = st.get("round", 0)
-        self.in_round = False
-        self.round_items: list[str] = []
         self.needs_you: list[str] = st.get("needs_you", [])
-        cfg = config()
-        self.poll = float(cfg.get("pr_poll", 90))
-        self.max_rounds = int(cfg.get("pr_max_rounds", 10))
-        self.me_login = (gh("api", "user") or {}).get("login", "")
+        self.green = False
+        self.outcome: str | None = None  # MERGED, CLOSED or STOPPED once the watch is over
+        self.me_login = me_login
+        self.round_items: list[str] = []
         self.pending_since: float | None = None
-        self.quiet_until = 0.0  # after a push, don't call it converged before the new head's checks register
+        self.quiet_until = time.time() + 180  # a fresh PR's CI and review bots can take a while to register checks
+        self.save()
 
     def save(self) -> None:
-        self.state_path.write_text(json.dumps({"handled": sorted(self.handled), "round": self.round,
+        self.state_path.write_text(json.dumps({"handled": sorted(self.handled), "round": self.round, "green": self.green,
                                                "needs_you": self.needs_you}, indent=1) + "\n")
 
     def api(self, path: str) -> list | dict:
@@ -1108,124 +1184,167 @@ class PrHerder(Herder):
         with (self.d / "PR.md").open("a") as f:
             f.write(f"- {time.strftime('%Y-%m-%d %H:%M')} {text}\n")
 
-    def start_round(self, sha: str, items: list[tuple[str, str]]) -> None:
+    def start_round(self, sha: str, items: list[tuple[str, str]]) -> Path:
+        """Write the round file; it names the PR, its checkout C and notes dir D, so one Tinker can serve several PRs."""
         self.round += 1
-        self.in_round = True
         self.round_items = [k for k, _ in items]
+        self.green = False
         path = self.d / f"round-{self.round}.md"
-        path.write_text(f"# Round {self.round}: {self.meta['url']}\n\nHead: `{sha}` on `{self.meta['branch']}`; checkout `{self.cwd}`.\n\n"
+        path.write_text(f"# Round {self.round}: {self.url}\n\nPR {self.repo}#{self.number}, branch `{self.meta['branch']}` → "
+                        f"`{self.meta['base']}`. Checkout C: `{self.meta['checkout']}`. Notes dir D: `{self.d}`. Head: `{sha}`.\n\n"
                         + "\n\n".join(md for _, md in items) + "\n")
-        self.log(f"round {self.round}: {len(items)} item(s) -> Tinker")
         self.note(f"round {self.round}: {len(items)} item(s), see round-{self.round}.md")
-        subprocess.run(["hc", "send", self.name("tinker"), f"ROUND {self.round}: {path}"], capture_output=True)
         self.save()
+        return path
 
     def end_round(self, how: str) -> None:
         self.handled.update(self.round_items)
-        self.in_round = False
         self.round_items = []
         self.note(f"round {self.round}: {how}")
         self.save()
 
     def finish(self, outcome: str) -> None:
+        self.outcome = outcome
         set_status(self.d / "PR.md", f"{outcome} (muster)")
-        spec = self.meta.get("spec") and spec_file(Path(self.meta["spec"]))
-        if spec:  # a herd shipped this PR: carry the outcome back to its spec
-            n = f"PR #{self.number}"
-            set_status(spec, {"MERGED": f"Shipped ({n} merged)", "CLOSED": f"In progress ({n} closed without merging)"}.get(
-                outcome, f"Implemented ({n} green; awaiting your merge)" if outcome.startswith("CONVERGED")
-                else f"In review ({n}: {outcome.lower()}; see {self.d}/PR.md)"))
         self.note(outcome)
-        self.log(outcome)
-        self.close()
-        extra = f" Needs you: {'; '.join(self.needs_you)}." if self.needs_you else ""
-        self.tell_origin(f"Muster: {self.meta['url']} {outcome} after {self.round} round(s). Rounds and replies: {self.d}/PR.md.{extra}")
+        self.save()
 
-    def poll_once(self) -> bool:
-        """Returns True when the watch is over."""
-        pr = gh("pr", "view", str(self.number), "-R", self.repo, "--json", "state,headRefOid")
-        if pr["state"] != "OPEN":
-            self.finish(pr["state"].upper())
-            return True
-        if self.in_round:
-            return False
-        items, running = self.feedback(pr["headRefOid"])
-        if running:  # wait for checks (and review bots, which run as checks) on the current head
-            self.pending_since = self.pending_since or time.time()
-            if time.time() - self.pending_since < 30 * 60:
-                return False
-        self.pending_since = None
-        if items:
-            if self.round >= self.max_rounds:
-                self.tell_origin(f"Muster: {self.meta['url']} hit {self.max_rounds} rounds with feedback still coming; stopping here. See {self.d}/PR.md.")
-                self.finish("STOPPED")
-                return True
-            self.start_round(pr["headRefOid"], items)
-            return False
-        if time.time() < self.quiet_until:
-            return False
-        self.finish("CONVERGED: green, no new feedback")
-        return True
 
-    def handle(self, line: str) -> None:
-        if not line:
-            if self.paused:
-                self.paused = False
-                self.log("resumed")
-            return
-        self.log(f"<- {line[:300]}")
-        m = re.search(r"(PUSHED|NO_CHANGE|NEEDS_YOU|ESCALATE)\b[^:]*:?\s*(.*)", line)
-        if not m:
-            return
-        kind, rest = m.group(1), m.group(2).replace("</hc>", "").strip()
-        if kind == "NEEDS_YOU":
-            self.needs_you.append(rest[:200])
-            self.save()
-            self.tell_origin(f"Muster: {self.meta['url']} round {self.round} needs you: {rest[:300]}")
-        elif kind == "ESCALATE":
-            self.paused = True
-            self.tell_origin(f"Muster: {self.meta['url']} round {self.round} ESCALATED: Nitpick keeps rejecting Tinker's fix ({rest[:200]}). "
-                             f"Tinker and Nitpick stay up in this space. Once it's sorted: muster resume {self.d}")
-        elif self.in_round:
-            if kind == "PUSHED":
-                self.quiet_until = time.time() + 180
-            self.end_round(f"pushed {rest[:60]}" if kind == "PUSHED" else "no code change")
-            self.next_poll = time.time() + 30
+def spec_pr_status(watches: list[PrWatch]) -> str:
+    """The spec's Status while its PRs are watched; Scribe syncs Linear from it."""
+    nums = lambda ws: ", ".join(f"#{w.number}" for w in ws)  # noqa: E731
+    open_ = [w for w in watches if not w.outcome]
+    if watches and all(w.outcome == "MERGED" for w in watches):
+        return f"Shipped (PR {nums(watches)} merged)"
+    if not open_:
+        closed = [w for w in watches if w.outcome != "MERGED"]
+        return f"In progress (PR {nums(closed)} {'closed without merging' if all(w.outcome == 'CLOSED' for w in closed) else 'stopped; see PR.md'})"
+    if all(w.green for w in open_):
+        return f"Implemented (PR {nums(open_)} green; awaiting your merge)"
+    return f"In review (muster: {', '.join(w.url for w in open_)})"
+
+
+def watch_prs(herder: "Herder", watches: list[PrWatch], spec: Path | None) -> None:
+    """Poll the PRs; hand each round of new feedback to the herder's Tinker (one round at a time across all PRs);
+    Tinker replies PUSHED/NO_CHANGE/NEEDS_YOU, Nitpick ESCALATE. Returns once every PR is merged or closed."""
+    import select
+    cfg = config()
+    poll, max_rounds = float(cfg.get("pr_poll", 90)), int(cfg.get("pr_max_rounds", 10))
+    active: PrWatch | None = None
+    paused = False
+    next_poll = time.time() + 20  # let the agents settle
+    buf = b""
+
+    def sync_spec() -> None:
+        sf = spec_file(spec) if spec else None
+        if sf and get_status(sf.read_text()) != (want := spec_pr_status(watches)):
+            set_status(sf, want)
+
+    while any(not w.outcome for w in watches):
+        ready, _, _ = select.select([0], [], [], max(1.0, next_poll - time.time()))
+        if ready:
+            chunk = os.read(0, 65536)
+            if not chunk:
+                return
+            buf += chunk.replace(b"\r", b"\n")
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                line = raw.decode(errors="replace").strip()
+                if not line:
+                    if paused:
+                        paused = False
+                        herder.log("resumed")
+                    continue
+                herder.log(f"<- {line[:300]}")
+                m = re.search(r"(PUSHED|NO_CHANGE|NEEDS_YOU|ESCALATE)\b[^:]*:?\s*(.*)", line)
+                if not m:
+                    continue
+                kind, rest = m.group(1), m.group(2).replace("</hc>", "").strip()
+                w = active or watches[0]
+                if kind == "NEEDS_YOU":
+                    w.needs_you.append(rest[:200])
+                    w.save()
+                    herder.tell_origin(f"Muster: {w.url} round {w.round} needs you: {rest[:300]}")
+                elif kind == "ESCALATE":
+                    paused = True
+                    herder.tell_origin(f"Muster: {w.url} round {w.round} ESCALATED: Nitpick keeps rejecting Tinker's fix ({rest[:200]}). "
+                                       f"Tinker and Nitpick stay up in this space. Once it's sorted: muster resume {herder.d}")
+                elif active:
+                    if kind == "PUSHED":
+                        active.quiet_until = time.time() + 180
+                    active.end_round(f"pushed {rest[:60]}" if kind == "PUSHED" else "no code change")
+                    active = None
+                    next_poll = time.time() + 30
+            continue
+        if not paused:
+            for w in watches:
+                if w.outcome:
+                    continue
+                try:
+                    pr = gh("pr", "view", str(w.number), "-R", w.repo, "--json", "state,headRefOid")
+                    if pr["state"] != "OPEN":
+                        w.finish(pr["state"].upper())
+                        herder.log(f"{w.url} {w.outcome}")
+                        active = None if active is w else active
+                        extra = f" Needs you: {'; '.join(w.needs_you)}." if w.needs_you else ""
+                        herder.tell_origin(f"Muster: {w.url} {w.outcome} after {w.round} round(s). Rounds and replies: {w.d}/PR.md.{extra}")
+                        continue
+                    if active:
+                        continue
+                    items, running = w.feedback(pr["headRefOid"])
+                    if running:  # wait for checks (and review bots, which run as checks) on the current head
+                        w.pending_since = w.pending_since or time.time()
+                        if time.time() - w.pending_since < 30 * 60:
+                            continue
+                    w.pending_since = None
+                    if items:
+                        if w.round >= max_rounds:
+                            w.finish("STOPPED")
+                            herder.tell_origin(f"Muster: {w.url} hit {max_rounds} rounds with feedback still coming; stopped watching it. See {w.d}/PR.md.")
+                            continue
+                        path = w.start_round(pr["headRefOid"], items)
+                        herder.log(f"{w.url} round {w.round}: {len(items)} item(s) -> Tinker")
+                        subprocess.run(["hc", "send", herder.name("tinker"), f"ROUND {w.round}: {path}"], capture_output=True)
+                        active = w
+                    elif time.time() >= w.quiet_until and not w.green:
+                        w.green = True
+                        w.save()
+                        w.note("green, no open feedback; still watching for new comments until it's merged or closed")
+                        herder.log(f"{w.url} green")
+                        herder.tell_origin(f"Muster: {w.url} is green with no open feedback, ready for your review and merge. "
+                                           "Muster keeps watching it: new comments or failed checks start another round until it's merged or closed.")
+                except RuntimeError as e:  # a GitHub hiccup: log it and try again next poll
+                    herder.log(f"poll {w.url}: {e}")
+            sync_spec()
+        next_poll = time.time() + poll
+    sync_spec()
+
+
+class PrHerder(Herder):
+    """`muster pr`: watches one PR someone else built, with its own Tinker (fixes) and Nitpick (checks every fix)."""
+
+    GRID = PR_GRID
+    TEMPLATE = "muster-pr-{role}"
+
+    def __init__(self, d: Path):
+        super().__init__(d)
+        self.meta = json.loads((self.d / ".muster-pr.json").read_text())
+        self.cwd = Path(self.meta["checkout"])
 
     def run(self) -> None:
-        import select
-        self.log(f"watching {self.meta['url']} as {self.me_login or '?'}; checkout {self.cwd}; origin {self.origin or 'none'}")
+        me_login = (gh("api", "user") or {}).get("login", "")
+        w = PrWatch(self.d, me_login)
+        self.log(f"watching {w.url} as {me_login or '?'}; checkout {self.cwd}; origin {self.origin or 'none'}")
         if self.origin:
             subprocess.run(["hc", "label", self.origin, f"herdr.space={space_id(self.d)}", f"herdr.tab={tab_id(self.d)}",
                             *spec_labels(self.d)], capture_output=True)
-        common = (f"PR: {self.meta['url']} ({self.repo}#{self.number}), branch {self.meta['branch']} → {self.meta['base']}. "
+        common = (f"PR: {w.url} ({w.repo}#{w.number}), branch {self.meta['branch']} → {self.meta['base']}. "
                   f"Checkout: {self.cwd}. Notes dir D: {self.d}. Herder: {self.me}.")
         self.launch("tinker", f"{common} Nitpick: {self.name('nitpick')}. Wait for a ROUND message.")
         self.launch("nitpick", f"{common} Tinker: {self.name('tinker')}. Wait for a CHECK message from Tinker.")
-        self.paused = False
-        self.next_poll = time.time() + 20  # let both agents boot
-        self.quiet_until = time.time() + 180  # a fresh PR's CI and review bots can take a while to register checks
-        buf = b""
-        while True:
-            ready, _, _ = select.select([0], [], [], max(1.0, self.next_poll - time.time()))
-            if ready:
-                chunk = os.read(0, 65536)
-                if not chunk:
-                    return
-                buf += chunk.replace(b"\r", b"\n")
-                while b"\n" in buf:
-                    raw, buf = buf.split(b"\n", 1)
-                    self.handle(raw.decode(errors="replace").strip())
-                continue
-            if self.paused:
-                self.next_poll = time.time() + self.poll
-                continue
-            try:
-                if self.poll_once():
-                    return
-            except RuntimeError as e:  # a GitHub hiccup: log it and try again next poll
-                self.log(f"poll: {e}")
-            self.next_poll = time.time() + self.poll
+        spec = Path(self.meta["spec"]) if self.meta.get("spec") else None
+        watch_prs(self, [w], spec)
+        self.close()
 
 
 def run_pr(d: Path) -> None:

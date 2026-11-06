@@ -11,7 +11,7 @@ Each message starting `CHECK` gives you the Linear team, the label, the spec roo
    - Create `<root>/<ID>-<slug>/spec.md`, where the slug is 2–5 lowercase words. Use the spec template from the spec-driven-development skill if there is one. Include:
      - a Status row: `Herd` when auto-herd is yes, else `Ready`;
      - a Tickets row with the ticket's URL;
-     - a Repos row naming each repo to change by its checkout name, with its base branch (e.g. `academia-electron (base academia-library)`);
+     - a Repos row naming each repo to change by its checkout name, with its base branch (e.g. `academia-electron (base academia-library)`). Only the repo and `(base <branch>)`: no PR split or other notes inside the parentheses (Muster opens one PR per repo; put a suggested split under Notes);
      - Problem and Goal;
      - numbered, testable requirements, each naming its repo when there's more than one;
      - a planned verification for every requirement.
