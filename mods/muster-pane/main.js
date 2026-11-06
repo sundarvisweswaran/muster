@@ -10,9 +10,9 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { panes, props, run, theme, home, terminals } from "herdr";
 
-const ROLES = { herder: "Herder", plotter: "Plotter", tinker: "Tinker", nitpick: "Nitpick", scribe: "Scribe" };
+const ROLES = { herder: "Herder", plotter: "Plotter", tinker: "Tinker", nitpick: "Nitpick", scribe: "Scribe", spec: "Spec" };
 // Each role's color, from the theme's ANSI palette so it follows any theme. "you": the agent that started the herd.
-const ROLE_COLOR = { you: "ansi6", plotter: "ansi5", tinker: "ansi3", nitpick: "ansi2", herder: "ansi4", scribe: "ansi4" };
+const ROLE_COLOR = { you: "ansi6", plotter: "ansi5", tinker: "ansi3", nitpick: "ansi2", herder: "ansi4", scribe: "ansi4", spec: "ansi7" };
 
 function terminalOf(address) {
   if (!address) return null;
@@ -23,14 +23,19 @@ function terminalOf(address) {
 }
 
 // The spec link: Herder labels each herd terminal (and the origin agent) with the spec file and the
-// editor command (a JSON argv) resolved on that terminal's machine.
+// editor command (a JSON argv) resolved on that terminal's machine. It goes to the herd's Spec tab if one
+// is open, else opens the spec in a split.
 function specOf(term) {
   const file = term?.labels?.["muster.specfile"];
   if (!file) return null;
   let editor;
   try { editor = JSON.parse(term.labels["muster.editor"] ?? "[]"); } catch { editor = []; }
   const parts = file.split("/");
-  return { file, label: parts.slice(-2).join("/"), argv: [...(editor.length ? editor : ["vi"]), file] };
+  const machine = term.machine ?? null;
+  const tab = terminals().find((x) => x.labels?.["muster.role"] === "spec" && (x.machine ?? null) === machine
+    && x.labels?.["muster.spec"] === term.labels["muster.spec"]);
+  return { file, label: parts.slice(-2).join("/"), argv: [...(editor.length ? editor : ["vi"]), file],
+    terminal: tab ? (machine ? `${machine}/${tab.address}` : tab.address) : null, self: tab?.address === term.address };
 }
 
 function icon(p, size, color) {
@@ -99,7 +104,7 @@ export default class Pane extends View {
         .text_size(11.5).font_bold().text_color(t.background).child(role)))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(role ? t.muted : t.foreground).child(name))
       .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
-      .when(Boolean(spec), el => el.child(h_flex()
+      .when(Boolean(spec) && !spec.self, el => el.child(h_flex()
         .id(`ph-spec-${pane}`)
         .flex_none()
         .gap(4)
@@ -111,7 +116,8 @@ export default class Pane extends View {
         .hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => {
           cx.stop_propagation();
-          run("pane.split", { direction: "right", pane, argv: spec.argv });
+          if (spec.terminal) run("pane.focus", { terminal: spec.terminal });
+          else run("pane.split", { direction: "right", pane, argv: spec.argv });
         })
         .child(svg("mods/files/file.svg").size(12).flex_none())
         .child(div().max_w(220).truncate().underline().child(spec.label))))

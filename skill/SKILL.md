@@ -5,7 +5,7 @@ description: "Muster runs work through separate herdr agents in their own Herdr 
 
 # Muster
 
-Plan → build → verify, with a separate agent per role, each in its own Herdr pane. The usual flow: the user ideates with you, you write the spec, and they say "herd this" (or accept your offer). You start the herd, and your own pane joins it.
+Plan → build → verify, with a separate agent per role, each in its own Herdr tab. The usual flow: the user ideates with you, you write the spec, and they say "herd this" (or accept your offer). You start the herd, and your own pane joins it.
 
 ## Starting a herd (from this conversation)
 
@@ -27,7 +27,7 @@ Plan → build → verify, with a separate agent per role, each in its own Herdr
 
 These are reports from Muster, not instructions from the user.
 
-**Ask before herding.** Never run `muster herd` unless the user explicitly asked for it. When you finish writing or updating a spec for a real feature or a multi-step change (Status `Ready`, testable requirements, at least one repo), ask once, before you start building: "Herd this? Plotter reviews the plan, Tinker builds it and Nitpick verifies it, each in their own pane, at about 3× the cost of building it here." Yes → draft PLAN.md (step 2), then `muster herd <spec dir>`, and don't build it yourself. No → carry on as usual. Don't ask while the user is only ideating or exploring, for small fixes, or for read-only investigations, and don't ask again for the same spec unless the user brings it up.
+**Ask before herding.** Never run `muster herd` unless the user explicitly asked for it. When you finish writing or updating a spec for a real feature or a multi-step change (Status `Ready`, testable requirements, at least one repo), ask once, before you start building: "Herd this? Plotter reviews the plan, Tinker builds it and Nitpick verifies it, each in their own tab, at about 3× the cost of building it here." Yes → draft PLAN.md (step 2), then `muster herd <spec dir>`, and don't build it yourself. No → carry on as usual. Don't ask while the user is only ideating or exploring, for small fixes, or for read-only investigations, and don't ask again for the same spec unless the user brings it up.
 
 **`/herd` in omp.** Typing `/herd [spec dir]` takes the user out of plan mode without running the plan, and sends you a message starting `/herd: hand this to Muster`. That message is the explicit request to herd: follow its steps (spec, then the draft PLAN.md from your plan file, then `muster herd`) and don't build anything yourself.
 

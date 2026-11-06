@@ -2,7 +2,7 @@
 
 <h1 align="center">Muster</h1>
 
-<p align="center"><b>Does your spec pass muster?</b><br>Plan → build → verify for one spec, with a separate coding agent for each step, side by side in <a href="https://herdr.dev">Herdr</a>.</p>
+<p align="center"><b>Does your spec pass muster?</b><br>Plan → build → verify for one spec, with a separate coding agent for each step, each in its own tab in <a href="https://herdr.dev">Herdr</a>.</p>
 
 ![Muster running a spec: your agent drafts the plan and starts the herd; its pane joins Plotter, Tinker and Nitpick in the spec's own space; Nitpick rejects round 1, Tinker fixes it, Nitpick signs off and your agent summarizes](docs/demo.gif)
 
@@ -15,7 +15,7 @@
 | ![The herd space](docs/screenshots/herd.png) | ![The outcome and the spec link](docs/screenshots/spec-link.png) |
 | The herd's own space: your agent (top left) beside Plotter, Tinker and Nitpick. Each header names its role and links to the spec. | After sign-off, only your agent remains, with its summary. Clicking the spec link opens the spec in your editor, in a split. |
 
-The flow: you ideate with your agent and it writes the spec. When you say "let's herd this" (or accept its offer), it drafts `PLAN.md` from your conversation and runs `muster herd <spec dir>`. Your agent's pane moves into a new Herdr space named after the spec, next to the three role agents:
+The flow: you ideate with your agent and it writes the spec. When you say "let's herd this" (or accept its offer), it drafts `PLAN.md` from your conversation and runs `muster herd <spec dir>`. Your agent's pane moves into a new Herdr space named after the spec, with one tab each for you, the spec, and the three role agents:
 
 | | |
 |---|---|
@@ -191,10 +191,11 @@ The PR's branch is used wherever it's already checked out; otherwise a worktree 
 
 - `muster watch` (the service) checks the spec roots every 5 s. When it finds the trigger, it sets Status to `In progress (muster)` and runs `muster start`.
 - Herder (`muster run`) is a small hidden script, not an AI agent. It starts each role with `hc run <template>`. The roles report with `hc send <herder>`, and the messages arrive on Herder's input. With `muster herd`, it also records the calling terminal (`$HC_TERMINAL_ID`) as the origin, moves that pane into the herd's space, and sends it the outcome.
-- Panes: each herd gets its own space (one tab, the 2×2 grid). Every terminal carries the `herdr.space` / `herdr.tab` labels. Herder writes the grid into herdr-core's `herdr-app` layout document, so the layout exists even with no window open, and remote herds appear in your Herdr app under that machine.
-- Spec link: Herder labels each herd terminal with `muster.specfile` and `muster.editor`, a JSON argv resolved on that machine. The `muster-pane` header shows the link and runs `pane.split {direction: "right", argv: [...editor, spec]}`.
+- Tabs: each herd gets its own space with a tab per member, in order You, Spec, Plotter, Tinker, Nitpick (a PR watch: Spec, Tinker, Nitpick). Tabs you add to the space yourself stay. Every terminal carries the `herdr.space` / `herdr.tab` labels for its own tab. Herder writes the tabs into herdr-core's `herdr-app` layout document, so the layout exists even with no window open, and remote herds appear in your Herdr app under that machine.
+- Spec tab: Herder opens the spec in `editor` (config; else `$VISUAL`/`$EDITOR`, druk in `~/.druk/bin`, nvim, hx, vim, nano, vi). For druk it then presses Esc (closing its update popup) and Ctrl+Alt+M, so markdown shows rendered; that's `PREVIEW_KEYS` in `bin/muster`.
+- Spec link: Herder labels each herd terminal with `muster.specfile` and `muster.editor`, a JSON argv resolved on that machine. The `muster-pane` header shows the link; it focuses the Spec tab (`pane.focus {terminal}`), or opens the spec in a split if there's no Spec tab.
 
 ## Limitations
 
-- The layout uses the Herdr app's layout document (`doc.get` / `doc.set`), which isn't a documented format. If a Herdr update changes it, the grid can break; the pipeline still runs.
+- The layout uses the Herdr app's layout document (`doc.get` / `doc.set`), which isn't a documented format. If a Herdr update changes it, the tabs can break; the pipeline still runs.
 - Role agents run without permission prompts. Use it on machines and repos where that's acceptable.

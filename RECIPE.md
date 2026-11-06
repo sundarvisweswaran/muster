@@ -1,6 +1,6 @@
 # Muster
 
-Plan → build → verify for one spec, with a separate coding agent for each step. Your agent drafts the plan, Plotter reviews it, Tinker builds it and Nitpick checks it, in the spec's own Herdr space. It also watches pull requests, fixing failed checks and review comments until they're green. This mod is Muster's pane header: each pane names its role (`Plotter · omp`) and links to the spec, and a click opens the spec in your editor in a split. Every other pane looks exactly as it does with Herdr's shipped `pane` header. Two more mods come with it: `muster`, a sidebar panel listing running herds, PR watches and the queue on every machine, and `muster-board`, a window with a column per stage (both read `muster ls --json`). The rest of Muster (the CLI, the watcher and the agent templates) installs from the repo's README.
+Plan → build → verify for one spec, with a separate coding agent for each step. Your agent drafts the plan, Plotter reviews it, Tinker builds it and Nitpick checks it, in the spec's own Herdr space. It also watches pull requests, fixing failed checks and review comments until they're green. This mod is Muster's pane header: each pane names its role (`Plotter · omp`) and links to the spec, and a click goes to the herd's Spec tab (or opens the spec in your editor in a split when there's no Spec tab). Every other pane looks exactly as it does with Herdr's shipped `pane` header. Two more mods come with it: `muster`, a sidebar panel listing running herds, PR watches and the queue on every machine, and `muster-board`, a window with a column per stage (both read `muster ls --json`). The rest of Muster (the CLI, the watcher and the agent templates) installs from the repo's README.
 
 ![Muster](preview.png)
 
@@ -42,7 +42,7 @@ Plan → build → verify for one spec, with a separate coding agent for each st
 - Remote terminals: without the machine-aware address match, panes on other machines lose their role and fall back to the program name.
 - The shipped label prefers the program name for agents, so an omp pane alone just says "omp". The role has to come from the label, not the title.
 - Copy `pane` with `mod.clone` rather than editing the shipped mod. The app restores shipped mods.
-- It only changes the header. The 2×2 grid, the spaces and the agents come from the `muster` CLI.
+- It only changes the header. The spaces, their tabs and the agents come from the `muster` CLI.
 
 ## Done when
 
@@ -50,4 +50,4 @@ Plan → build → verify for one spec, with a separate coding agent for each st
 - In a running herd, the role headers read `Plotter · <agent>`, `Tinker · <agent>`, `Nitpick · <agent>` (Herder itself runs hidden), including for a herd on another machine. The agent that started the herd keeps its normal label and also shows the spec link.
 - A pane that isn't part of a herd shows exactly what the shipped `pane` header shows.
 - The status markers and hover buttons behave as above.
-- In a herd pane, clicking the spec link opens a split to the right running the editor on the spec; clicking elsewhere on the bar only focuses the pane.
+- In a herd pane, clicking the spec link focuses the herd's Spec tab (the terminal labeled `muster.role=spec` with the same `muster.spec`, on the same machine); without one, it opens a split to the right running the editor on the spec. The Spec tab's own header shows no link. Clicking elsewhere on the bar only focuses the pane.

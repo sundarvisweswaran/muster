@@ -28,6 +28,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -50,7 +51,6 @@ BLURB = {"plotter": "reviews the draft PLAN.md (or writes one) and finalizes it"
 # Agents known to report status to herdr (OSC 7501); others get `ready: quiet`.
 REPORTING = {"omp", "claude", "codex", "pi", "opencode", "amp", "droid", "gemini", "kimi", "qwen", "cursor-agent", "devin"}
 DOC = "herdr-app"
-GRID = [["origin", "plotter"], ["tinker", "nitpick"]]  # origin: the agent that ran `muster herd`
 
 DEFAULT_CONFIG = """# Muster config. Each role runs an interactive agent command of your choice.
 spec_roots = ["~/code/specs"]   # each spec: <root>/<folder>/spec.md (or SPEC.md)
@@ -190,8 +190,10 @@ def space_id(d: Path) -> str:
     return "spmuster" + hashlib.sha1(str(d).encode()).hexdigest()[:20]
 
 
-def tab_id(d: Path) -> str:
-    return "tbmuster" + hashlib.sha1(str(d).encode()).hexdigest()[:20]
+def tab_id(d: Path, role: str = "origin") -> str:
+    """The herd's tab for one member; the origin agent's tab keeps the plain id."""
+    base = "tbmuster" + hashlib.sha1(str(d).encode()).hexdigest()[:20]
+    return base if role == "origin" else f"{base}-{role}"
 
 
 def repo_bases(text: str) -> dict[str, str]:
@@ -299,10 +301,14 @@ def _blocks(node: dict | None, acc: dict[str, str]) -> dict[str, str]:
     return acc
 
 
-def write_layout(d: Path, folder: str, members: dict[str, str] | None, grid: list[list[str]] = GRID) -> None:
-    """Give the herd its own space (named after the spec folder) with one tab holding a grid of
-    members (slot -> address). A member shown in another tab (the origin agent's pane) moves here;
-    a tab or space that move leaves empty closes. members=None removes the herd's space."""
+# A herd's space has one tab per member, in this order, each named for its role.
+TABS = {"origin": "You", "spec": "Spec", "plotter": "Plotter", "tinker": "Tinker", "nitpick": "Nitpick", "scribe": "Scribe"}
+
+
+def write_layout(d: Path, folder: str, members: dict[str, str] | None) -> None:
+    """Give the herd its own space (named after the spec folder) with a tab per member (role -> address).
+    A member shown elsewhere (the origin agent's pane) moves here; a tab or space that move leaves empty
+    closes. Tabs you add to the space yourself stay. members=None removes the herd's space."""
     sid, tid = space_id(d), tab_id(d)
     for _ in range(10):
         got = rpc("doc.get", {"name": DOC})["result"]
@@ -328,23 +334,21 @@ def write_layout(d: Path, folder: str, members: dict[str, str] | None, grid: lis
             if not space:
                 space = {"id": sid, "name": d.name, "folder": folder, "tabs": []}
                 spaces.append(space)
-            tab = next((t for t in space.get("tabs", []) if t.get("id") == tid), None)
-            if not tab:
-                tab = {"id": tid, "name": "herd"}
-                space.setdefault("tabs", []).append(tab)
-            panes = _blocks(tab.get("root"), {})
-            rows = []
-            shown = [r for row in grid for r in row if r in members]
-            if len(shown) == 2:  # two panes read best side by side, not stacked
-                grid = [shown]
-            for i, row in enumerate(grid):
-                cells = [r for r in row if r in members]
-                if cells:
-                    rows.append({"type": "row", "id": f"{tid}r{i}", "size": {"weight": 1.0}, "children": [
-                        {"type": "block", "id": panes.get(members[r]) or "p" + uuid.uuid4().hex,
-                         "content": {"terminal": members[r]}, "size": {"weight": 1.0}} for r in cells]})
+            old = space.get("tabs", [])
+            blocks = {}
+            for t in old:
+                _blocks(t.get("root"), blocks)
+            tabs = []
+            for role in (r for r in TABS if r in members):
+                rid = tab_id(d, role)
+                tabs.append({"id": rid, "name": TABS[role], "root": {"type": "column", "id": f"{rid}c", "children": [
+                    {"type": "block", "id": blocks.get(members[role]) or "p" + uuid.uuid4().hex,
+                     "content": {"terminal": members[role]}, "size": {"weight": 1.0}}]}})
+            mine = {tab_id(d, r) for r in TABS}
+            space["tabs"] = tabs + [t for t in old if t.get("id") not in mine]  # tabs you opened in the space stay
             space["name"] = d.name
-            tab["root"] = {"type": "column", "id": tid, "children": rows}
+            if not space["tabs"]:
+                spaces.remove(space)
         if "result" in rpc("doc.set", {"name": DOC, "value": doc, "version": version}):
             return
         time.sleep(0.3)  # the app wrote at the same time: re-read and retry
@@ -355,9 +359,22 @@ def editor_argv() -> list[str]:
     """The editor that opens a spec from its pane header: config `editor`, else a real $VISUAL/$EDITOR,
     else the first terminal editor installed."""
     for cmd in (config().get("editor"), os.environ.get("VISUAL"), os.environ.get("EDITOR")):
-        if cmd and agent_name(cmd) not in ("true", "false", ":") and shutil.which(agent_name(cmd)):
-            return shlex.split(cmd)
+        if not cmd or agent_name(cmd) in ("true", "false", ":"):
+            continue
+        argv = shlex.split(cmd)
+        exe = os.path.expanduser(argv[0])
+        found = exe if os.sep in exe and os.access(exe, os.X_OK) else shutil.which(exe)
+        if found:
+            return [found, *argv[1:]]
+    druk = HOME / ".druk" / "bin" / "druk"  # druk's installer puts it here, off the PATH services see
+    if druk.is_file():
+        return [str(druk)]
     return [next((e for e in ("nvim", "hx", "vim", "nano", "vi") if shutil.which(e)), "vi")]
+
+
+# Keys that switch an editor to its rendered markdown view once it's open. druk: Esc closes its
+# startup "update available" popup, which would otherwise swallow the next key; Ctrl+Alt+M toggles rendered.
+PREVIEW_KEYS = {"druk": ["esc", "ctrl+alt+m"]}
 
 
 def spec_labels(d: Path) -> list[str]:
@@ -371,7 +388,7 @@ def labels(d: Path, role: str, shown: bool = True) -> list[str]:
     """hc --label args. shown=False leaves out herdr.space/herdr.tab so Herdr keeps it off screen."""
     kvs = [*spec_labels(d), f"muster.role={role}"]
     if shown:
-        kvs = [f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d)}", *kvs]
+        kvs = [f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d, role)}", *kvs]
     out: list[str] = []
     for kv in kvs:
         out += ["--label", kv]
@@ -601,9 +618,9 @@ def show_scribe(addr: str, code_root: Path) -> None:
     if not addr:
         return
     d = code_root / "muster-scribe"  # names the space; no folder is created
-    subprocess.run(["hc", "label", addr, f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d)}"], capture_output=True)
+    subprocess.run(["hc", "label", addr, f"herdr.space={space_id(d)}", f"herdr.tab={tab_id(d, 'scribe')}"], capture_output=True)
     try:
-        write_layout(d, str(code_root), {"origin": addr})
+        write_layout(d, str(code_root), {"scribe": addr})
     except Exception:  # noqa: BLE001 - visibility is cosmetic; the check runs either way
         pass
 
@@ -688,7 +705,6 @@ def ls(as_json: bool = False) -> None:
 class Herder:
     """Drives one herd. Runs hidden (no pane); its pane slot goes to the origin agent, if any."""
 
-    GRID = GRID
     TEMPLATE = "muster-{role}"
 
     def __init__(self, d: Path):
@@ -730,7 +746,7 @@ class Herder:
 
     def layout(self, remove: bool = False) -> None:
         try:
-            write_layout(self.d, str(self.cwd), None if remove else self.members, self.GRID)
+            write_layout(self.d, str(self.cwd), None if remove else self.members)
         except Exception as e:  # noqa: BLE001 - layout is cosmetic; never stop the pipeline for it
             self.log(f"layout: {e}")
 
@@ -750,6 +766,29 @@ class Herder:
         self.log(f"started {TITLES[role]} as {addr}" + ("" if sent else "  !! task NOT delivered; check its pane"))
         self.layout()
 
+    def open_spec(self, path: Path | None) -> None:
+        """The Spec tab: the spec in your editor (config `editor`), switched to rendered markdown where the editor
+        has a key for it (PREVIEW_KEYS)."""
+        if not path or not path.is_file():
+            return
+        argv = editor_argv()
+        out = hc("run", "--bg", "--name", self.name("spec"), "--cwd", str(path.parent), *labels(self.d, "spec"),
+                 "--", *argv, str(path), check=False)
+        addr = out.get("address")
+        if not addr:
+            self.log(f"!! could not open the spec in {argv[0]}: {out}")
+            return
+        self.members["spec"] = addr
+        self.layout()
+        keys = PREVIEW_KEYS.get(Path(argv[0]).name) if path.suffix.lower() in (".md", ".markdown") else None
+        if keys:
+            def press() -> None:
+                time.sleep(3)  # let the editor draw first
+                for k in keys:
+                    subprocess.run(["hc", "keys", addr, k], capture_output=True)
+                    time.sleep(0.4)
+            threading.Thread(target=press, daemon=True).start()
+
     def first_line(self, fname: str) -> str:
         p = self.d / fname
         text = p.read_text().strip() if p.is_file() else ""
@@ -760,7 +799,7 @@ class Herder:
             set_status(self.sf, value)
 
     def stop_peers(self) -> None:
-        for role in ("nitpick", "tinker", "plotter"):
+        for role in ("nitpick", "tinker", "plotter", "spec"):
             if role in self.members:
                 subprocess.run(["hc", "kill", self.name(role)], capture_output=True)
                 subprocess.run(["hc", "rm", self.name(role)], capture_output=True)
@@ -921,6 +960,7 @@ class Herder:
         if self.origin:
             subprocess.run(["hc", "label", self.origin, f"herdr.space={space_id(self.d)}", f"herdr.tab={tab_id(self.d)}",
                             *spec_labels(self.d)], capture_output=True)
+        self.open_spec(self.sf)
         draft = (self.d / "PLAN.md").is_file()
         self.log(f"plan: {'draft PLAN.md found; Plotter reviews it' if draft else 'no draft; Plotter writes PLAN.md'}")
         self.launch("plotter", f"{common} " + ("A draft PLAN.md is waiting: review it, don't re-plan. " if draft else "There is no draft PLAN.md: write it. ")
@@ -1000,7 +1040,6 @@ def resume(d: Path) -> str:
 
 # ---------- PR mode: watch a pull request, fix failures, address review comments ----------
 
-PR_GRID = [["origin", "tinker"], ["nitpick"]]
 FAILED = {"failure", "timed_out", "startup_failure", "action_required", "error"}
 PENDING = {"queued", "in_progress", "waiting", "pending", "requested"}
 
@@ -1323,7 +1362,6 @@ def watch_prs(herder: "Herder", watches: list[PrWatch], spec: Path | None) -> No
 class PrHerder(Herder):
     """`muster pr`: watches one PR someone else built, with its own Tinker (fixes) and Nitpick (checks every fix)."""
 
-    GRID = PR_GRID
     TEMPLATE = "muster-pr-{role}"
 
     def __init__(self, d: Path):
@@ -1340,9 +1378,10 @@ class PrHerder(Herder):
                             *spec_labels(self.d)], capture_output=True)
         common = (f"PR: {w.url} ({w.repo}#{w.number}), branch {self.meta['branch']} → {self.meta['base']}. "
                   f"Checkout: {self.cwd}. Notes dir D: {self.d}. Herder: {self.me}.")
+        spec = Path(self.meta["spec"]) if self.meta.get("spec") else None
+        self.open_spec((spec_file(spec) if spec else None) or self.d / "PR.md")
         self.launch("tinker", f"{common} Nitpick: {self.name('nitpick')}. Wait for a ROUND message.")
         self.launch("nitpick", f"{common} Tinker: {self.name('tinker')}. Wait for a CHECK message from Tinker.")
-        spec = Path(self.meta["spec"]) if self.meta.get("spec") else None
         watch_prs(self, [w], spec)
         self.close()
 
