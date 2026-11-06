@@ -2,7 +2,36 @@
 // Reads `muster ls --json` on each connected machine every 5 s. Click a herd to open its space.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, machines, run, theme, openOverlay } from "herdr";
+import { exec, machines, run, theme, openOverlay, props, layout } from "herdr";
+
+// Fold: the layout passes this section's block id as props().fold. Folding shrinks the block to its header
+// (layout.resize px); unfolding restores the weight it had, kept in localStorage.
+function foldNode(n, id) {
+  if (!n) return null;
+  if (n.id === id) return n;
+  for (const c of n.children ?? []) { const f = foldNode(c, id); if (f) return f; }
+  return null;
+}
+function isFolded(id, px) {
+  const s = id && foldNode(layout(), id)?.size;
+  return Boolean(s?.px && s.px <= px + 1);
+}
+function toggleFold(id, px) {
+  const s = foldNode(layout(), id)?.size ?? {};
+  if (s.px && s.px <= px + 1) run("layout.resize", { id, weight: Number(localStorage.getItem("fold.weight")) || 1 });
+  else {
+    localStorage.setItem("fold.weight", String(s.weight ?? 1));
+    run("layout.resize", { id, px });
+  }
+}
+function foldChevron(t, id, px) {
+  return div().id("fold").size(16).flex_none().flex().items_center().justify_center().rounded(4).text_color(t.dim)
+    .hover((s) => s.bg(t.hover).text_color(t.foreground))
+    .tooltip(isFolded(id, px) ? "Expand" : "Collapse")
+    .on_click((_e, cx) => { cx.stop_propagation(); toggleFold(id, px); })
+    .child(svg(`mods/workspace-chrome/chevron-${isFolded(id, px) ? "right" : "down"}.svg`).size(12));
+}
+const FOLD_PX = 42; // the header (41) and its top border
 
 const WORKING = new Set(["Starting", "Planning", "Building", "Verifying"]);
 
@@ -145,6 +174,8 @@ export default class Muster extends View {
       for (const s of d.scribe ?? []) rows.push(this.scribeRow(t, machine, s, multi));
       for (const i of d.inbox ?? []) rows.push(this.inboxRow(t, machine, i, multi));
     }
+    const fold = props()?.fold;
+    const folded = isFolded(fold, FOLD_PX);
     return v_flex()
       .size_full()
       .min_h(0)
@@ -162,7 +193,9 @@ export default class Muster extends View {
           .items_center()
           .justify_between()
           .child(h_flex().gap(8).items_center()
-            .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Muster"))
+            .child(h_flex().gap(4).items_center().ml(-4)
+              .when(Boolean(fold), (el) => el.child(foldChevron(t, fold, FOLD_PX)))
+              .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Muster")))
             .child(div()
               .id("mu-board")
               .px(5)
@@ -177,10 +210,10 @@ export default class Muster extends View {
             .tooltip(`Herds running / max_herds, per machine: ${caps.join(", ")}`)
             .child(entries.length ? [running && `${running} running`, queued && `${queued} queued`].filter(Boolean).join(" · ") : "")),
       )
-      .when(rows.length === 0, (el) =>
+      .when(rows.length === 0 && !folded, (el) =>
         el.child(div().px(16).text_size(12).text_color(t.dim).child(entries.length
           ? "No herds. Type /herd in omp, or set a spec's Status to Herd."
           : "Looking for Muster…")))
-      .child(v_flex().id("mu-list").flex_1().min_h(0).px(8).overflow_y_scrollbar().children(rows));
+      .when(!folded, (el) => el.child(v_flex().id("mu-list").flex_1().min_h(0).px(8).overflow_y_scrollbar().children(rows)));
   }
 }
